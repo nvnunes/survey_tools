@@ -35,6 +35,7 @@ survey_tools/
 │   └── sky/                  # Atmospheric transmission and background data
 ├── docs/                     # Documentation and references (under development)
 ├── examples/                 # Jupyter notebooks demonstrating tool usage
+│   ├── healpix.ipynb         # Working with HEALpix
 │   ├── match-3DHST.ipynb     # Cross-matching with the 3D-HST catalog
 │   ├── match-UVISTA.ipynb    # Cross-matching with the UltraVISTA catalog
 │   ├── read-catalog.ipynb    # Reading and processing a spectroscopic catalog
@@ -48,6 +49,7 @@ survey_tools/
 │   ├── asterism.py           # Identify asterisms in a star catalog
 │   ├── catalog.py            # Read and consolidate various spectroscopic catalogs
 │   ├── gaia.py               # Query and retrieve star data from the Gaia database
+│   ├── healpix.py            # Convert between HEALpix and celestial coordinates
 │   ├── match.py              # Cross-match catalogs by ID and celestial coordinates
 │   └── sky.py                # Atmospheric transmission and emission line rejection
 ├── tests/                    # Unit tests (under development)

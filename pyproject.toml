@@ -21,7 +21,8 @@ dependencies = [
     "pyds9",
     "regions",
     "compress_pickle",
-    "tabulate"
+    "tabulate",
+    "astropy-healpix"
 ]
 dynamic = ["version"]
 
