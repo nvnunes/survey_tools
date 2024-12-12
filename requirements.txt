@@ -1,0 +1,9 @@
+numpy>=2.2.0
+scipy>=1.14.1
+astropy>=7.0.0
+astroquery
+matplotlib
+pyds9
+regions
+compress_pickle
+tabulate

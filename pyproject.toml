@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=64", "wheel", "setuptools_scm[toml]>=3.4"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "survey_tools"
+authors = [
+    {name = "Nelson V. Nunes", email = "nvnunes@yorku.ca"},
+]
+description = "Tools for planning surveys of high-redshift galaxies"
+readme = "README.md"
+urls = {repository = "https://github.com/nvnunes/survey_tools"}
+requires-python = ">=3.13"
+license = {text = "MIT License"}
+dependencies = [
+    "numpy >= 2.2.0",
+    "scipy >= 1.14.1",
+    "astropy >= 7.0.0",
+    "astroquery",
+    "matplotlib",
+    "pyds9",
+    "regions",
+    "compress_pickle",
+    "tabulate"
+]
+dynamic = ["version"]
+
+[tool.setuptools.packages]
+find = {namespaces = false}
+
+[tool.setuptools_scm]
+write_to = "survey_tools/_version.py"
