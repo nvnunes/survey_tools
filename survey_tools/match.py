@@ -441,9 +441,6 @@ def add_missing_sources(cat1, cat2, idx_or_filter):
     if table.has_field(cat1, 'idmap'):
         cat1.idmap = table.add_rows(cat1, cat1.idmap, catalog.get_id_field(cat1, 'idmap'), id, default_value=-1)
 
-    if not table.has_field(cat1, 'original_count'):
-        cat1.original_count = cat1.count
-
     cat1.count += len(id)
 
 def get_default_value(column_name, catalog_data):
