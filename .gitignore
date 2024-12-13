@@ -163,3 +163,4 @@ cython_debug/
 _version.py
 data/*
 !data/README.txt
+.vscode
