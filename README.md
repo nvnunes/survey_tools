@@ -29,6 +29,7 @@ Ensure you have the following software installed:
 ```
 survey_tools/
 │
+├── create/                   # Scripts for generating cross-matched catalogs
 ├── data/                     # Data used by some tools
 │   ├── catalogs/             # Third-party and cross-matched spectroscopic catalogs
 │   ├── images/               # Catalog images (where available)
@@ -36,15 +37,10 @@ survey_tools/
 ├── docs/                     # Documentation and references (under development)
 ├── examples/                 # Jupyter notebooks demonstrating tool usage
 │   ├── healpix.ipynb         # Working with HEALpix
-│   ├── match-3DHST.ipynb     # Cross-matching with the 3D-HST catalog
-│   ├── match-UVISTA.ipynb    # Cross-matching with the UltraVISTA catalog
 │   ├── read-catalog.ipynb    # Reading and processing a spectroscopic catalog
 │   ├── read-DESI.ipynb       # Reading the DESI ELG catalog (Early Data Release)
 │   ├── sky.ipynb             # Using atmospheric transmission and line rejection tools
 │   └── stars.ipynb           # Loading star data and finding asterisms
-├── match/                    # Scripts for generating cross-matched catalogs
-│   ├── create-3DHST-PLUS.py  # Create the 3D-HST Plus cross-matched catalog
-│   └── create-UVISTA-PLUS.py # Create the UltraVISTA Plus cross-matched catalog
 ├── survey_tools/             # Core source code for the tools
 │   ├── asterism.py           # Identify asterisms in a star catalog
 │   ├── catalog.py            # Read and consolidate various spectroscopic catalogs
