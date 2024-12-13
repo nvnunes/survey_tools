@@ -38,8 +38,11 @@ def get_default_data_path():
 
     return data_path
 
-def _get_default_catalog_path():
-    return f"{get_default_data_path()}/catalogs"
+def _get_default_catalog_path(catalog_name = None):
+    if catalog_name is not None:
+        return f"{get_default_data_path()}/catalogs/{catalog_name}"
+    else:
+        return f"{get_default_data_path()}/catalogs"
 
 def _get_default_image_path():
     return f"{get_default_data_path()}/images"
@@ -58,42 +61,8 @@ def get_params(catalog_name, field_name = None, filter_name = None):
         case _:
             catalog_params.field = field_name
 
-    catalog_params.catalog_data_path  = _get_default_catalog_path()
+    catalog_params.catalog_path  = _get_default_catalog_path(catalog_name)
     catalog_params.catalog_image_path = _get_default_image_path()
-
-    match catalog_name:
-        case 'UVISTA':
-            catalog_params.catalog_path = f"{catalog_params.catalog_data_path}/UVISTA"
-        case 'ZCOSMOS-BRIGHT':
-            catalog_params.catalog_path = f"{catalog_params.catalog_data_path}/zCOSMOS"
-        case 'ZCOSMOS-DEEP':
-            catalog_params.catalog_path = f"{catalog_params.catalog_data_path}/zCOSMOS"
-        case '3D-HST':
-            catalog_params.catalog_path = f"{catalog_params.catalog_data_path}/3D-HST"
-        case 'VUDS':
-            catalog_params.catalog_path = f"{catalog_params.catalog_data_path}/VUDS"
-        case 'Casey':
-            catalog_params.catalog_path = f"{catalog_params.catalog_data_path}/Casey"
-        case 'DEIMOS':
-            catalog_params.catalog_path = f"{catalog_params.catalog_data_path}/DEIMOS"
-        case 'MOSDEF':
-            catalog_params.catalog_path = f"{catalog_params.catalog_data_path}/MOSDEF"
-        case 'FMOS':
-            catalog_params.catalog_path = f"{catalog_params.catalog_data_path}/FMOS"
-        case 'KMOS3D':
-            catalog_params.catalog_path = f"{catalog_params.catalog_data_path}/KMOS3D"
-        case 'C3R2':
-            catalog_params.catalog_path = f"{catalog_params.catalog_data_path}/C3R2"
-        case 'LEGAC':
-            catalog_params.catalog_path = f"{catalog_params.catalog_data_path}/LEGA-C"
-        case 'HELP':
-            catalog_params.catalog_path = f"{catalog_params.catalog_data_path}/HELP"
-        case 'DESI':
-            catalog_params.catalog_path = f"{catalog_params.catalog_data_path}/DESI"
-        case 'UVISTA-PLUS':
-            catalog_params.catalog_path = f"{catalog_params.catalog_data_path}/UVISTA-PLUS"
-        case '3D-HST-PLUS':
-            catalog_params.catalog_path = f"{catalog_params.catalog_data_path}/3D-HST-PLUS"
 
     if field_name is not None:
         catalog_params.field_file_prefix = field_name.upper().replace('-', '')
