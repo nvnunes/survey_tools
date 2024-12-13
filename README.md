@@ -22,7 +22,7 @@ Ensure you have the following software installed:
    ```bash
    pip3 install -r requirements.txt
    ```
-3. Optionally, request access to the data files (see `data/README.txt`)
+3. Optionally, download data files (see `data/README.txt`)
 
 ## Directory Structure
 
