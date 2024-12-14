@@ -120,6 +120,7 @@ def read(catalog_params, force_tables = False, region = None, region_wcs = None)
     catalog_data = StructType()
     catalog_data.params = catalog_params
     catalog_data.catalog = catalog_params.catalog
+    catalog_data.count = 0
     catalog_data.field = catalog_params.field
     catalog_data.hduls = []
 
@@ -163,35 +164,36 @@ def read(catalog_params, force_tables = False, region = None, region_wcs = None)
 
             #,id,ra,dec,z_spec,z_phot,log_mass,log_sfr,Av,is_mass_clumpy,is_UV_clumpy,UV_frac_clump
             file_path = f"{catalog_params.catalog_path}/Viz_COSMOS_deconv_clumpy_catalog.csv"
-            clump_data = astropy.io.ascii.read(file_path)
+            if os.path.exists(file_path):
+                clump_data = astropy.io.ascii.read(file_path)
 
-            id = np.zeros((catalog_data.count), dtype=np.int_) # pylint: disable=redefined-builtin
-            is_mass_clumpy = np.zeros((catalog_data.count), dtype=np.bool)
-            is_UV_clumpy = np.zeros((catalog_data.count), dtype=np.bool)
-            UV_frac_clump = -1 * np.ones((catalog_data.count))
+                id = np.zeros((catalog_data.count), dtype=np.int_) # pylint: disable=redefined-builtin
+                is_mass_clumpy = np.zeros((catalog_data.count), dtype=np.bool)
+                is_UV_clumpy = np.zeros((catalog_data.count), dtype=np.bool)
+                UV_frac_clump = -1 * np.ones((catalog_data.count))
 
-            for i in np.arange(len(clump_data)):
-                indexes = np.where(catalog_data.sources['id'] == clump_data['id'][i])[0]
-                if len(indexes) == 0:
-                    continue
-                idx = indexes[0]
+                for i in np.arange(len(clump_data)):
+                    indexes = np.where(catalog_data.sources['id'] == clump_data['id'][i])[0]
+                    if len(indexes) == 0:
+                        continue
+                    idx = indexes[0]
 
-                if catalog_data.sources['z_spec'][idx] != clump_data['z_spec'][i]:
-                    raise Exception(f"z_spec doesn't match: {clump_data['id'][i]}")
+                    if catalog_data.sources['z_spec'][idx] != clump_data['z_spec'][i]:
+                        raise Exception(f"z_spec doesn't match: {clump_data['id'][i]}")
 
-                id[idx] = clump_data['id'][i]
-                is_mass_clumpy[idx] = clump_data['is_mass_clumpy'][i] == 'True'
-                is_UV_clumpy[idx] = clump_data['is_UV_clumpy'][i] == 'True'
-                UV_frac_clump[idx] = clump_data['UV_frac_clump'][i]
+                    id[idx] = clump_data['id'][i]
+                    is_mass_clumpy[idx] = clump_data['is_mass_clumpy'][i] == 'True'
+                    is_UV_clumpy[idx] = clump_data['is_UV_clumpy'][i] == 'True'
+                    UV_frac_clump[idx] = clump_data['UV_frac_clump'][i]
 
-            catalog_data.clumps = Table([
-                    id, is_mass_clumpy, is_UV_clumpy, UV_frac_clump
-                ], names=[
-                    'id', 'is_mass_clumpy', 'is_UV_clumpy', 'UV_frac_clump',
-                ], dtype=[
-                    np.int_, np.bool, np.bool, np.float64,
-                ]
-            )
+                catalog_data.clumps = Table([
+                        id, is_mass_clumpy, is_UV_clumpy, UV_frac_clump
+                    ], names=[
+                        'id', 'is_mass_clumpy', 'is_UV_clumpy', 'UV_frac_clump',
+                    ], dtype=[
+                        np.int_, np.bool, np.bool, np.float64,
+                    ]
+                )
 
         case 'ZCOSMOS-BRIGHT':
             catalog_data.source = 'ZCB'
@@ -219,6 +221,9 @@ def read(catalog_params, force_tables = False, region = None, region_wcs = None)
             catalog_data.frame = 'fk5'
 
             file_path = f"{catalog_params.catalog_path}/cosmos_zspec_zgt2.txt" # zCOSMOS Deep (not public, unreleased)
+            if not os.path.exists(file_path):
+                return catalog_data
+
             include_names = ['ra','dec','z_spec','Q_f']
             catalog_data.sources = astropy.io.ascii.read(file_path, include_names=include_names)
             catalog_data.sources.add_column(np.arange(len(catalog_data.sources))+1, name='id', index=0)
@@ -281,7 +286,7 @@ def read(catalog_params, force_tables = False, region = None, region_wcs = None)
         case 'Casey':
             catalog_data.source = 'Casey'
             catalog_data.name = 'Casey DSFG'
-            catalog_data.date = datetime(2017, 5, 10)
+            catalog_data.date = datetime(2012, 12, 1)
             catalog_data.frame = 'fk5'
 
             file_path = f"{catalog_params.catalog_path}/apj449592t1_mrt.txt"
@@ -397,7 +402,7 @@ def read(catalog_params, force_tables = False, region = None, region_wcs = None)
 
         case 'FMOS':
             catalog_data.source = 'FMOS'
-            catalog_data.name = 'FMOS'
+            catalog_data.name = 'FMOS-COSMOS'
             catalog_data.date = datetime(2019, 1, 25)
             catalog_data.frame = 'fk5'
 
@@ -470,7 +475,7 @@ def read(catalog_params, force_tables = False, region = None, region_wcs = None)
 
         case 'LEGAC':
             catalog_data.source = 'LEGAC'
-            catalog_data.name = 'LEGAC'
+            catalog_data.name = 'LEGA-C'
             catalog_data.date = datetime(2021, 8, 2)
             catalog_data.frame = 'fk5'
 
@@ -481,9 +486,9 @@ def read(catalog_params, force_tables = False, region = None, region_wcs = None)
             catalog_data.lines_is_copy = True
             catalog_data.hduls = [sources_hdul]
 
-        case 'HELP':
-            catalog_data.source = 'HELP'
-            catalog_data.name = 'HELP Public'
+        case 'HSCSSP':
+            catalog_data.source = 'HSCSSP'
+            catalog_data.name = 'HSC SSP Public'
             catalog_data.date = datetime(2000, 1, 1) # So all other z-specs of the same file take precidence (since this is a cross-matched catalog)
             catalog_data.frame = 'fk5'
 
@@ -609,7 +614,7 @@ def get_id_field(catalog_data_or_params, table_name=None):
                     return 'number'
                 case _:
                     return 'id'
-        case 'VUDS' | 'Casey' | 'DEIMOS' | 'C3R2' | 'HELP':
+        case 'VUDS' | 'Casey' | 'DEIMOS' | 'C3R2' | 'HSCSSP':
             return 'index'
         case 'MOSDEF':
             return 'ID_V4'
@@ -630,7 +635,7 @@ def get_ra_field(catalog_data_or_params):
             return 'alpha'
         case 'DEIMOS':
             return 'Ra'
-        case 'MOSDEF' | 'FMOS' | 'KMOS3D' | 'LEGAC' | 'HELP':
+        case 'MOSDEF' | 'FMOS' | 'KMOS3D' | 'LEGAC' | 'HSCSSP':
             return 'RA'
         case 'DESI':
             return 'TARGET_RA'
@@ -643,7 +648,7 @@ def get_dec_field(catalog_data_or_params):
             return 'delta'
         case 'DEIMOS':
             return 'Dec'
-        case 'MOSDEF' | 'FMOS' | 'KMOS3D' | 'LEGAC' | 'HELP':
+        case 'MOSDEF' | 'FMOS' | 'KMOS3D' | 'LEGAC' | 'HSCSSP':
             return 'DEC'
         case 'DESI':
             return 'TARGET_DEC'
@@ -842,7 +847,7 @@ def get_redshift_spec(catalog_data, idx_or_filter = None, force_catalog_name = N
         case 'DESI':
             z_spec = catalog_data.sources['Z'][idx_or_filter]
 
-        case 'HELP':
+        case 'HSCSSP':
             z_spec = catalog_data.sources['Z_SPEC'][idx_or_filter]
 
         case 'UVISTA-PLUS' | '3D-HST-PLUS':
@@ -1179,7 +1184,7 @@ def get_redshift_spec(catalog_data, idx_or_filter = None, force_catalog_name = N
                 value_filter = (z_spec_flag == 99) & (catalog_data.sources['FLAG_SPEC'][idx_or_filter] > 0)
                 z_spec_flag[value_filter] = 81
 
-        case 'HELP':
+        case 'HSCSSP':
             # Q=1 means no redshift could be estimated;
             # Q=2 means a possible, but doubtful, redshift estimate;
             # Q=3 means a ‘probable’ redshift (notionally 90% confidence);

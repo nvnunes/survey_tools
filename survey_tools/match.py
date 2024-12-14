@@ -19,6 +19,11 @@ class MatchException(Exception):
     pass
 
 def cross_match_catalogs_by_id(cat1, cat2, id_field1=None, id_field2=None, assume_unique=False):
+    if cat2.count == 0:
+        matches = StructType()
+        matches.count = 0
+        return matches
+
     if id_field1 is None:
         id_field1 = catalog.get_id_field(cat1)
     if id_field2 is None:
@@ -71,6 +76,11 @@ def multi_match_coords(coords1, coords2, max_sep):
     return idx2s, seps, dist
 
 def cross_match_catalogs_by_ra_dec(cat1, cat2, max_sep=None, mode=None):
+    if cat2.count == 0:
+        matches = StructType()
+        matches.count = 0
+        return matches
+
     if max_sep is None:
         max_sep = 1.0*u.arcsec
     elif not isinstance(max_sep, u.Quantity):
@@ -180,6 +190,11 @@ def cross_match_catalogs_by_ra_dec(cat1, cat2, max_sep=None, mode=None):
     return matches
 
 def cross_match_catalogs_by_id_ra_dec(cat1, cat2, id_field1=None, id_field2=None, sky_max_sep=None, sky_mode=None):
+    if cat2.count == 0:
+        matches = StructType()
+        matches.count = 0
+        return matches
+
     if id_field1 is None:
         id_field1 = catalog.get_id_field(cat1)
 
