@@ -19,6 +19,11 @@ class MatchException(Exception):
     pass
 
 def cross_match_catalogs_by_id(cat1, cat2, id_field1=None, id_field2=None, assume_unique=False):
+    if cat2.count == 0:
+        matches = StructType()
+        matches.count = 0
+        return matches
+
     if id_field1 is None:
         id_field1 = catalog.get_id_field(cat1)
     if id_field2 is None:
@@ -41,36 +46,12 @@ def cross_match_catalogs_by_id(cat1, cat2, id_field1=None, id_field2=None, assum
 
     return matches
 
-def multi_match_coords(coords1, coords2, max_sep):
-    N = len(coords1)
-
-    tmp_idx1s, tmp_idx2s, tmp_seps, tmp_dist = search_around_sky(coords1, coords2, max_sep, storekdtree='kdtree')
-    sorting_indexes = np.argsort(tmp_idx1s)
-    tmp_idx1s = tmp_idx1s[sorting_indexes]
-    tmp_idx2s = tmp_idx2s[sorting_indexes]
-    tmp_seps  = tmp_seps[sorting_indexes]
-    tmp_dist  = tmp_dist[sorting_indexes]
-
-    idx2s = [np.array([], dtype=np.int_) for i in np.arange(N)]
-    seps = [np.array([]) for i in np.arange(N)]
-    dist = [np.array([]) for i in np.arange(N)]
-
-    if len(tmp_idx1s) > 0:
-        j = 0
-        for i in np.arange(N):
-            if i < tmp_idx1s[j]:
-                continue
-            while j < len(tmp_idx1s) and tmp_idx1s[j] == i:
-                idx2s[i] = np.append(idx2s[i], tmp_idx2s[j])
-                seps[i] = np.append(seps[i], tmp_seps[j].to_value(u.arcsec))
-                dist[i] = np.append(dist[i], tmp_dist[j].to_value(u.Mpc))
-                j += 1
-            if j == len(tmp_idx1s):
-                break
-
-    return idx2s, seps, dist
-
 def cross_match_catalogs_by_ra_dec(cat1, cat2, max_sep=None, mode=None):
+    if cat2.count == 0:
+        matches = StructType()
+        matches.count = 0
+        return matches
+
     if max_sep is None:
         max_sep = 1.0*u.arcsec
     elif not isinstance(max_sep, u.Quantity):
@@ -112,8 +93,8 @@ def cross_match_catalogs_by_ra_dec(cat1, cat2, max_sep=None, mode=None):
         # sorted in the same order as the coords1 (so idx1 is in ascending order). This is considered
         # an implementation detail, though, so it could change in a future release.
 
-        cat1_idx2s, cat1_seps, cat1_dist = multi_match_coords(cat1_coords, cat2_coords, max_sep)
-        cat2_idx1s, _        , cat2_dist = multi_match_coords(cat2_coords, cat1_coords, max_sep)
+        cat1_idx2s, cat1_seps, cat1_dist = _multi_match_coords(cat1_coords, cat2_coords, max_sep)
+        cat2_idx1s, _        , cat2_dist = _multi_match_coords(cat2_coords, cat1_coords, max_sep)
 
         N = len(cat1_coords)
         idx2 = -1 * np.ones((N), dtype=np.int_)
@@ -172,7 +153,7 @@ def cross_match_catalogs_by_ra_dec(cat1, cat2, max_sep=None, mode=None):
 
     unmatched_filter = np.ones((len(cat2_coords)), dtype=np.bool)
     unmatched_filter[idx2[match_filter]] = False
-    idx1s, _, _ = multi_match_coords(cat2_coords[unmatched_filter], cat1_coords, max_sep)
+    idx1s, _, _ = _multi_match_coords(cat2_coords[unmatched_filter], cat1_coords, max_sep)
 
     matches.unmatched_idx2 = np.hstack([np.arange(cat2.count)[~cat2_filter], cat2_index_map[unmatched_filter]])
     matches.unmatched_num = np.hstack([np.zeros((np.sum(~cat2_filter)), dtype=np.int_), np.array([len(a) for a in idx1s])])
@@ -180,6 +161,11 @@ def cross_match_catalogs_by_ra_dec(cat1, cat2, max_sep=None, mode=None):
     return matches
 
 def cross_match_catalogs_by_id_ra_dec(cat1, cat2, id_field1=None, id_field2=None, sky_max_sep=None, sky_mode=None):
+    if cat2.count == 0:
+        matches = StructType()
+        matches.count = 0
+        return matches
+
     if id_field1 is None:
         id_field1 = catalog.get_id_field(cat1)
 
@@ -270,7 +256,7 @@ def append_cross_matched_data(matches, cat1, cat2):
         idx1 = matches.idx1[i]
         idx2 = matches.idx2[i]
 
-        id2         = get_source_id(cat2, idx2)
+        id2         = _get_source_id(cat2, idx2)
         z1, _       = catalog.get_redshift_any(cat1, idx1)
         z2, z2_flag = catalog.get_redshift_any(cat2, idx2)
 
@@ -311,7 +297,7 @@ def append_cross_matched_data(matches, cat1, cat2):
     # Step 3: Handle missing sources from Cat2
     num_missing_sources = len(matches.unmatched_idx2)
     if num_missing_sources > 0:
-        add_missing_sources(cat1, cat2, matches.unmatched_idx2)
+        _add_missing_sources(cat1, cat2, matches.unmatched_idx2)
 
         match_id = np.vstack([match_id, cat2.sources[catalog.get_id_field(cat2)][matches.unmatched_idx2].reshape((-1,1))])
         match_num = np.vstack([match_num, matches.unmatched_num.reshape((-1,1))])
@@ -395,7 +381,36 @@ def append_cross_matched_data(matches, cat1, cat2):
     table.add_fields(cat1.idmap, f"{cat2.source}_dist", match_dist)
     table.add_fields(cat1.idmap, f"{cat2.source}_dz", match_dz)
 
-def get_source_id(catalog_data, idx_or_filter = None):
+def _multi_match_coords(coords1, coords2, max_sep):
+    N = len(coords1)
+
+    tmp_idx1s, tmp_idx2s, tmp_seps, tmp_dist = search_around_sky(coords1, coords2, max_sep, storekdtree='kdtree')
+    sorting_indexes = np.argsort(tmp_idx1s)
+    tmp_idx1s = tmp_idx1s[sorting_indexes]
+    tmp_idx2s = tmp_idx2s[sorting_indexes]
+    tmp_seps  = tmp_seps[sorting_indexes]
+    tmp_dist  = tmp_dist[sorting_indexes]
+
+    idx2s = [np.array([], dtype=np.int_) for i in np.arange(N)]
+    seps = [np.array([]) for i in np.arange(N)]
+    dist = [np.array([]) for i in np.arange(N)]
+
+    if len(tmp_idx1s) > 0:
+        j = 0
+        for i in np.arange(N):
+            if i < tmp_idx1s[j]:
+                continue
+            while j < len(tmp_idx1s) and tmp_idx1s[j] == i:
+                idx2s[i] = np.append(idx2s[i], tmp_idx2s[j])
+                seps[i] = np.append(seps[i], tmp_seps[j].to_value(u.arcsec))
+                dist[i] = np.append(dist[i], tmp_dist[j].to_value(u.Mpc))
+                j += 1
+            if j == len(tmp_idx1s):
+                break
+
+    return idx2s, seps, dist
+
+def _get_source_id(catalog_data, idx_or_filter = None):
     if idx_or_filter is None:
         N = catalog_data.count
         idx_or_filter = np.ones((N), dtype=np.bool)
@@ -412,7 +427,7 @@ def get_source_id(catalog_data, idx_or_filter = None):
     return catalog_data.sources[field_name][idx_or_filter]
 
 # pylint: disable=redefined-builtin
-def add_missing_sources(cat1, cat2, idx_or_filter):
+def _add_missing_sources(cat1, cat2, idx_or_filter):
     if table.has_field(cat1, 'redshift') and not table.has_field(cat1.redshift, 'z_merged'):
         table.add_fields(cat1.redshift, ['z_merged', 'z_merged_flag'], [-99.0, 99])
 
@@ -428,25 +443,22 @@ def add_missing_sources(cat1, cat2, idx_or_filter):
     offset = 10000000*(len(cat1.all_sources)-1)
     id += offset
 
-    cat1.sources = table.add_rows(cat1, cat1.sources, [catalog.get_id_field(cat1), catalog.get_ra_field(cat1), catalog.get_dec_field(cat1)], np.array([id, ra, dec]), default_value_func = get_default_value)
+    cat1.sources = table.add_rows(cat1, cat1.sources, [catalog.get_id_field(cat1), catalog.get_ra_field(cat1), catalog.get_dec_field(cat1)], np.array([id, ra, dec]), default_value_func = _get_default_value)
 
     if table.has_field(cat1, 'redshift'):
-        cat1.redshift = table.add_rows(cat1, cat1.redshift, [catalog.get_id_field(cat1, 'redshift'), 'z_merged', 'z_merged_flag'], np.array([id, z, z_flag]), default_value_func = get_default_value)
+        cat1.redshift = table.add_rows(cat1, cat1.redshift, [catalog.get_id_field(cat1, 'redshift'), 'z_merged', 'z_merged_flag'], np.array([id, z, z_flag]), default_value_func = _get_default_value)
     if table.has_field(cat1, 'spp'):
-        cat1.spp = table.add_rows(cat1, cat1.spp, catalog.get_id_field(cat1, 'spp'), id, default_value_func = get_default_value)
+        cat1.spp = table.add_rows(cat1, cat1.spp, catalog.get_id_field(cat1, 'spp'), id, default_value_func = _get_default_value)
     if table.has_field(cat1, 'lines'):
-        cat1.lines = table.add_rows(cat1, cat1.lines, catalog.get_id_field(cat1, 'lines'), id, default_value_func = get_default_value)
+        cat1.lines = table.add_rows(cat1, cat1.lines, catalog.get_id_field(cat1, 'lines'), id, default_value_func = _get_default_value)
     if table.has_field(cat1, 'clumps'):
-        cat1.clumps = table.add_rows(cat1, cat1.clumps, catalog.get_id_field(cat1, 'clumps'), id, default_value_func = get_default_value)
+        cat1.clumps = table.add_rows(cat1, cat1.clumps, catalog.get_id_field(cat1, 'clumps'), id, default_value_func = _get_default_value)
     if table.has_field(cat1, 'idmap'):
         cat1.idmap = table.add_rows(cat1, cat1.idmap, catalog.get_id_field(cat1, 'idmap'), id, default_value=-1)
 
-    if not table.has_field(cat1, 'original_count'):
-        cat1.original_count = cat1.count
-
     cat1.count += len(id)
 
-def get_default_value(column_name, catalog_data):
+def _get_default_value(column_name, catalog_data):
     if 'flag_' in column_name or '_flag' in column_name: # Must come first to prevent fall-through
         return 99
     elif column_name == catalog.get_x_field(catalog_data) or column_name == catalog.get_y_field(catalog_data):

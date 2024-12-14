@@ -7,3 +7,4 @@ pyds9
 regions
 compress_pickle
 tabulate
+astropy-healpix
