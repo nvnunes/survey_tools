@@ -78,23 +78,17 @@ def get_params(catalog_name, field_name = None, filter_name = None):
         if filter_name is not None:
             match catalog_name:
                 case 'UVISTA' | 'UVISTA-PLUS':
+                    catalog_params.catalog_image_folder = f"{catalog_params.catalog_image_path}/UVISTA"
                     match filter_name:
                         case 'J':
-                            filter_string = '152'
+                            catalog_params.catalog_image_file = 'ADP.2024-05-27T16_34_32.521.fits'
                         case 'H':
-                            filter_string = '149'
+                            catalog_params.catalog_image_file = 'ADP.2024-05-27T16_34_32.523.fits'
                         case 'K':
-                            filter_string = '155'
-                case '3D-HST' | '3D-HST-PLUS':
-                    filter_string = filter_name
-
-            match catalog_name:
-                case 'UVISTA' | 'UVISTA-PLUS':
-                    catalog_params.catalog_image_folder = f"{catalog_params.catalog_image_path}/UVISTA"
-                    catalog_params.catalog_image_file = f"ADP.2023-05-02T10_57_31.{filter_string}.fits"
+                            catalog_params.catalog_image_file = 'ADP.2024-05-27T16_34_32.525.fits'
                 case '3D-HST' | '3D-HST-PLUS':
                     catalog_params.catalog_image_folder = f"{catalog_params.catalog_image_path}/3D-HST"
-                    catalog_params.catalog_image_file = f"{catalog_params.field_file_prefix}_3dhst.v4.0.{filter_string}_orig_sci.fits"
+                    catalog_params.catalog_image_file = f"{catalog_params.field_file_prefix}_3dhst.v4.0.{filter_name}_orig_sci.fits"
 
             if table.has_field(catalog_params, 'catalog_image_file'):
                 catalog_params.catalog_image_path = f"{catalog_params.catalog_image_folder}/{catalog_params.catalog_image_file}"
@@ -201,17 +195,13 @@ def read(catalog_params, force_tables = False, region = None, region_wcs = None)
             catalog_data.date = datetime(2016, 1, 19)
             catalog_data.frame = 'fk5'
 
-            file_path = f"{catalog_params.catalog_path}/zCOSMOS_v2.csv" # zCOSMOS Bright DR3 with 20,689 galaxies
-            include_names = ['OBJECT_ID','RAJ2000','DEJ2000','IMAG_AB','REDSHIFT','CC']
-            catalog_data.sources = astropy.io.ascii.read(file_path, include_names=include_names)
-            catalog_data.sources.rename_column('OBJECT_ID', 'id')
-            catalog_data.sources.rename_column('RAJ2000'  , 'ra')
-            catalog_data.sources.rename_column('DEJ2000'  , 'dec')
-            catalog_data.sources.rename_column('IMAG_AB'  , 'mag')
-            catalog_data.sources.rename_column('REDSHIFT' , 'z_spec')
-            catalog_data.sources.rename_column('CC'       , 'z_spec_cc')
+            file_path = f"{catalog_params.catalog_path}/zcosmos3.dat"
+            readme_path = f"{catalog_params.catalog_path}/ReadMe.txt"
 
-            source_filter = (catalog_data.sources['z_spec_cc'] > 0) & (catalog_data.sources['z_spec'] > 0.0)
+            catalog_data.sources = astropy.io.ascii.read(file_path, readme=readme_path, include_names=['zCOSMOS','RAdeg','DEdeg','z','CC','Imag'])
+            catalog_data.sources.rename_column('zCOSMOS', 'id')
+
+            source_filter = (catalog_data.sources['CC'] > 0) & (catalog_data.sources['z'] > 0.0)
             catalog_data.sources = catalog_data.sources[source_filter]
 
         case 'ZCOSMOS-DEEP':
@@ -224,8 +214,7 @@ def read(catalog_params, force_tables = False, region = None, region_wcs = None)
             if not os.path.exists(file_path):
                 return catalog_data
 
-            include_names = ['ra','dec','z_spec','Q_f']
-            catalog_data.sources = astropy.io.ascii.read(file_path, include_names=include_names)
+            catalog_data.sources = astropy.io.ascii.read(file_path, include_names=['ra','dec','z_spec','Q_f'])
             catalog_data.sources.add_column(np.arange(len(catalog_data.sources))+1, name='id', index=0)
             catalog_data.sources.rename_column('Q_f'  , 'z_spec_cc')
 
@@ -275,11 +264,14 @@ def read(catalog_params, force_tables = False, region = None, region_wcs = None)
 
             match catalog_data.field:
                 case 'COSMOS':
-                    file_path = f"{catalog_params.catalog_path}/cesam_vuds_spectra_dr1_cosmos_catalog.csv"
+                    file_path = f"{catalog_params.catalog_path}/cosmos.dat"
                 case 'GOODS-S':
-                    file_path = f"{catalog_params.catalog_path}/cesam_vuds_spectra_dr1_ecdfs_catalog.csv"
+                    file_path = f"{catalog_params.catalog_path}/ecdfs.dat"
 
-            catalog_data.sources = astropy.io.ascii.read(file_path)
+            readme_path = f"{catalog_params.catalog_path}/ReadMe"
+
+            catalog_data.sources = astropy.io.ascii.read(file_path, readme=readme_path, include_names=['VUDS', 'RAdeg', 'DEdeg', 'zspec', 'zflags'])
+            catalog_data.sources.rename_column('VUDS', 'id')
 
             table.add_fields(catalog_data.sources, 'index', np.arange(len(catalog_data.sources))+1)
 
@@ -631,8 +623,8 @@ def get_id_field(catalog_data_or_params, table_name=None):
 
 def get_ra_field(catalog_data_or_params):
     match catalog_data_or_params.catalog:
-        case 'VUDS':
-            return 'alpha'
+        case 'VUDS' | 'ZCOSMOS-BRIGHT':
+            return 'RAdeg'
         case 'DEIMOS':
             return 'Ra'
         case 'MOSDEF' | 'FMOS' | 'KMOS3D' | 'LEGAC' | 'HSCSSP':
@@ -644,8 +636,8 @@ def get_ra_field(catalog_data_or_params):
 
 def get_dec_field(catalog_data_or_params):
     match catalog_data_or_params.catalog:
-        case 'VUDS':
-            return 'delta'
+        case 'VUDS' | 'ZCOSMOS-BRIGHT':
+            return 'DEdeg'
         case 'DEIMOS':
             return 'Dec'
         case 'MOSDEF' | 'FMOS' | 'KMOS3D' | 'LEGAC' | 'HSCSSP':
@@ -800,7 +792,10 @@ def get_redshift_spec(catalog_data, idx_or_filter = None, force_catalog_name = N
         case 'UVISTA':
             z_spec = catalog_data.redshift['z_spec'][idx_or_filter]
 
-        case 'ZCOSMOS-BRIGHT' | 'ZCOSMOS-DEEP':
+        case 'ZCOSMOS-BRIGHT':
+            z_spec = catalog_data.sources['z'][idx_or_filter]
+
+        case 'ZCOSMOS-DEEP':
             z_spec = catalog_data.sources['z_spec'][idx_or_filter]
 
         case '3D-HST':
@@ -821,7 +816,7 @@ def get_redshift_spec(catalog_data, idx_or_filter = None, force_catalog_name = N
                 z_spec[value_filter] = catalog_data.redshift['z_max_grism'][idx_or_filter][value_filter]
 
         case 'VUDS':
-            z_spec = catalog_data.sources['z_spec'][idx_or_filter]
+            z_spec = catalog_data.sources['zspec'][idx_or_filter]
 
         case 'Casey':
             z_spec = catalog_data.sources['zspec'][idx_or_filter]
@@ -887,8 +882,11 @@ def get_redshift_spec(catalog_data, idx_or_filter = None, force_catalog_name = N
     match catalog_name:
         case 'UVISTA' | 'ZCOSMOS-BRIGHT' | 'ZCOSMOS-DEEP' | 'VUDS' | 'DEIMOS':
             match catalog_name:
+                case 'ZCOSMOS-BRIGHT':
+                    z_field_name = 'z'
+                    z_flag_field_name = 'CC'
                 case 'VUDS':
-                    z_field_name = 'z_spec'
+                    z_field_name = 'zspec'
                     z_flag_field_name = 'zflags'
                 case 'DEIMOS':
                     z_field_name = 'zspec'

@@ -59,20 +59,19 @@ Files:
  - data/catalogs/UVISTA/UVISTA_final_BC03_v4.1.fout
 
 ----------------------
-UltraVISTA Imaging DR5
+UltraVISTA Imaging DR6
 ----------------------
 
 Description:
  - https://eso.org/rm/api/v1/public/releaseDescriptions/221
 
 Sources:
- - https://archive.eso.org/scienceportal/home?data_collection=UltraVISTA&publ_date=2023-05-03
-   TODO: Update to DR6 (https://archive.eso.org/scienceportal/home?data_collection=UltraVISTA&publ_date=2024-06-27)
+ - https://archive.eso.org/scienceportal/home?data_collection=UltraVISTA&publ_date=2024-06-27
 
 Files:
- - data/images/UVISTA/ADP.2023-05-02T10_57_31.149.fits
- - data/images/UVISTA/ADP.2023-05-02T10_57_31.152.fits
- - data/images/UVISTA/ADP.2023-05-02T10_57_31.155.fits
+ - data/images/UVISTA/ADP.2024-05-27T16_34_32.521.fits (J)
+ - data/images/UVISTA/ADP.2024-05-27T16_34_32.523.fits (H)
+ - data/images/UVISTA/ADP.2024-05-27T16_34_32.525.fits (K)
 
 ----------------------
 3D-HST v4.1/v4.1.5/4.2
@@ -134,7 +133,7 @@ Files:
  - data/images/3D-HST/uds_3dhst.v4.0.F160W_orig_sci.fits
 
 ------------------
-zCOSMOS Bright DR2
+zCOSMOS Bright DR3
 ------------------
 
 References:
@@ -143,15 +142,15 @@ References:
    doi:10.1086/516589
 
 Sources:
- - DR2 source unknown
-   TODO: Upgrade to DR3 (https://cdsarc.cds.unistra.fr/viz-bin/cat/J/ApJS/172/70#/browse)
+ - https://cdsarc.cds.unistra.fr/viz-bin/cat/J/ApJS/172/70#/browse
 
 Files:
- - data/catalogs/zCOSMOS-BRIGHT/zCOSMOS_v2.csv
+ - data/catalogs/zCOSMOS-BRIGHT/zcosmos3.dat
+ - data/catalogs/zCOSMOS-BRIGHT/ReadMe.txt
 
----------
+--------
 VUDS DR1
----------
+--------
 
 References:
  - The VIMOS Ultra Deep Survey first data release: Spectra and spectroscopic
@@ -160,11 +159,11 @@ References:
 
 Sources:
  - https://cdsarc.cds.unistra.fr/viz-bin/cat/J/A+A/600/A110#/browse
-   TODO: use dat files instead of CSV
 
 Files:
- - data/catalogs/VUDS/cesam_vuds_spectra_dr1_cosmos_catalog.csv
- - data/catalogs/VUDS/cesam_vuds_spectra_dr1_ecdfs_catalog.csv
+ - data/catalogs/VUDS/cosmos.dat
+ - data/catalogs/VUDS/ecdfs.dat
+ - data/catalogs/VUDS/ReadMe
 
 ----------
 Casey DSFG
