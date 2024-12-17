@@ -12,6 +12,9 @@ from astropy_healpix import HEALPix
 class HealpixException(Exception):
     pass
 
+def get_npix(level):
+    return healpix.nside_to_npix(2**level)
+
 def get_resolution(level):
     return healpix.nside_to_pixel_resolution(2**level)
 

@@ -22,7 +22,9 @@ dependencies = [
     "regions",
     "compress_pickle",
     "tabulate",
-    "astropy-healpix"
+    "astropy-healpix",
+    "healpy",
+    "joblib"
 ]
 dynamic = ["version"]
 
