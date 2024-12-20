@@ -6,7 +6,6 @@
 
 from contextlib import contextmanager
 import os
-import pickle
 import signal
 import time
 import warnings
@@ -527,19 +526,16 @@ class Maps:
     @staticmethod
     def _get_outer_pixel_values(config, mode, outer_pix):
         galactic_coord = healpix.get_skycoord(config.outer_level, outer_pix).galactic
-
         excluded = False
+
+        # Exclusions that DO NOT require inner_data go here:
         if config.exclude_min_galactic_latitude > 0:
             excluded = np.abs(galactic_coord.b.degree) < config.exclude_min_galactic_latitude
 
-        if excluded:
-            values = np.full((len(config.maps)), np.nan)
-        elif mode == 'reload':
-            values = Maps._load_outer_pixel_values(config, outer_pix)
-        else:
-            if all(map in OUTER_ONLY_MAPS for map in config.maps):
-                inner_data = None
-            else:
+        if not excluded:
+            inner_data = None
+
+            if not all(map in OUTER_ONLY_MAPS for map in config.maps):
                 match mode:
                     case 'build':
                         inner_filename = Maps._get_inner_pixel_data_filename(config, outer_pix)
@@ -563,34 +559,19 @@ class Maps:
                         values[i] = Maps._compute_galaxy_model(galactic_coord)
                     case 'simple-galaxy-inner-average':
                         values[i] = np.mean(Maps._get_inner_pixel_data_column(inner_data, FITS_COLUMN_GALAXY_MODEL))
-                    case _:
-                        raise AOMapException(f"Map '{k}' unknown")
 
-            # Cache outer pixel values only in case we are using inner_data
-            # (i.e. processing is very slow)
             if inner_data is not None:
-                Maps._save_outer_pixel_values(config, outer_pix, values)
+                # Exclusions that DO require inner_data go here:
+                # TODO: excluded = ...
 
-        return np.insert(values, 0, np.float64(excluded))
+                inner_data.close()
 
-    @staticmethod
-    def _save_outer_pixel_values(config, outer_pix, values):
-        filename = Maps._get_outer_pixel_values_filename(config, outer_pix)
-        os.makedirs(os.path.dirname(filename), exist_ok=True)
+        excluded_and_values = np.full((1+len(config.maps)), np.nan)
+        excluded_and_values[0] = excluded
+        if not excluded:
+            np.copyto(excluded_and_values[1:], values)
 
-        with open(filename, 'wb') as f:
-            pickle.dump(dict(zip(config.maps, values)), f)
-
-    @staticmethod
-    def _load_outer_pixel_values(config, outer_pix):
-        filename = Maps._get_outer_pixel_values_filename(config, outer_pix)
-        with open(filename, 'rb') as f:
-            save_values = pickle.load(f)
-
-        if outer_pix == 0 and not np.all(list(save_values.keys()) == config.maps): # only check first outer_pix for performance
-            raise AOMapException('Keys do not match maps suggesting config changed. Rebuild or Recalc instead.')
-
-        return list(save_values.values())
+        return excluded_and_values
 
     @staticmethod
     def _get_inner_pixel_data(inner_data):
