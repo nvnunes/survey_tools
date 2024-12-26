@@ -1,13 +1,15 @@
-folder: ../data/maps/test
-cores: -1                     # 1: no parallelism, >1: number of cores, -1: all cores
+folder: ../data/maps
+cores: 6                      # 1: no parallelism, >1: number of cores, -1: all cores
 chunk_multiple: 100           # 0: skip chunking, chunk_size = cores * chunk_multiple = number of pixels computed between updates to disk
 outer_level: 6                # 6: ~1 deg resolution
-inner_level: 12               # 12: ~1 arcmin resolution
-
+inner_level: 14               # 14: ~10 arcsec resolution
+  
 maps:
-  - simple-galaxy-inner-average
+  - galaxy-model
+  - star-count
+  - stellar-density
 
-exclude_min_galactic_latitude: 15.0
+exclude_min_galactic_latitude: 0.0
 
 plot_projection: mollweide    # mollweide, cart, aitoff, lambert, hammer
 plot_coordsys: celestial      # celestial, galactic, ecliptic

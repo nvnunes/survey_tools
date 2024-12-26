@@ -8,14 +8,18 @@ from contextlib import contextmanager
 import os
 import signal
 import time
+import traceback
 import warnings
 import yaml
 from matplotlib import pyplot as plt
 import numpy as np
+from astropy.coordinates import SkyCoord
 from astropy.io import fits
+from astropy.table import Table
+import astropy.units as u
 import healpy
 from joblib import Parallel, delayed
-from survey_tools import healpix
+from survey_tools import gaia, healpix
 
 #region Globals
 
@@ -43,38 +47,37 @@ def prevent_interruption():
         raise KeyboardInterrupt
 
 ALLOWED_MAPS = [
-    'simple-galaxy',
-    'simple-galaxy-inner-average'
-]
-
-OUTER_ONLY_MAPS = [
-    'simple-galaxy'
+    'galaxy-model',
+    'star-count',
+    'stellar-density'
 ]
 
 FITS_COLUMN_MAP_VALUE = 'VALUE'
 FITS_COLUMN_MAP_EXCLUDED = 'EXCLUDED'
 FITS_COLUMN_GALAXY_MODEL = 'MODEL_DENSITY'
+FITS_COLUMN_STAR_COUNT = 'STAR_COUNT'
 
 #endregion
 
 class Maps:
-    def __init__(self, config, force_create=False, verbose=False):
+    def __init__(self, config, read_only=False, force_create=False, verbose=False):
         self.config = config
         self._check_config()
         self._add_config()
 
         self._maps = {}
-        self._load_maps(force_create=force_create, verbose=verbose)
+        self._load_maps(read_only=read_only, force_create=force_create, verbose=verbose)
 
     @staticmethod
-    def load(config_or_filename, mode='build', verbose=False):
+    def load(config_or_filename, mode='readonly', verbose=False):
         if isinstance(config_or_filename, str):
             config = Maps._read_config(config_or_filename)
         else:
             config = config_or_filename
 
-        force_create = mode != 'build'
-        return Maps(config, force_create=force_create, verbose=verbose)
+        read_only = mode == 'readonly'
+        force_create = not read_only and mode.startswith('re')
+        return Maps(config, read_only = read_only, force_create=force_create, verbose=verbose)
 
 #region Config
 
@@ -158,7 +161,7 @@ class Maps:
 
 #region Building
 
-    def build(self, mode='build', max_pixels=None, verbose=False):
+    def build(self, mode='build', pixs=None, max_pixels=None, verbose=False):
         num_maps = len(self)
 
         if self.config.chunk_multiple == 0:
@@ -166,9 +169,12 @@ class Maps:
         else:
             chunk_size = (self.config.cores if self.config.cores >= 1 else os.cpu_count()) * self.config.chunk_multiple
 
-        todo = np.zeros((num_maps), dtype=bool)
-        for k in self:
-            todo = todo | (np.isnan(self._get_map_values(k)) & ~self._get_map_excluded(k))
+        todo = np.zeros((self.config.outer_npix), dtype=bool)
+        if pixs is not None:
+            todo[pixs] = True
+        else:
+            for k in self:
+                todo = todo | (np.isnan(self.get_map_values(k)) & ~self.get_map_excluded(k))
 
         if np.all(todo):
             todo_pix = np.arange(self.config.outer_npix)
@@ -185,7 +191,7 @@ class Maps:
 
         num_todo = len(todo_pix)
 
-        if chunk_size >= num_todo:
+        if chunk_size > num_todo:
             chunk_size = num_todo
 
         num_chunks = int(np.ceil(num_todo / chunk_size))
@@ -204,15 +210,17 @@ class Maps:
                 values = np.full((end_idx-start_idx, num_maps), np.nan)
 
                 j = 0
-                for pix in todo_pix[start_idx:end_idx]:
-                    [excluded[j], values[j,:]] = Maps._get_outer_pixel_values(self.config, mode, pix)
+                for outer_pix in todo_pix[start_idx:end_idx]:
+                    results = Maps._get_outer_pixel_values(self.config, mode, outer_pix)
+                    excluded[j] = np.bool(results[0])
+                    values[j,:] = results[1:]
                     j += 1
             else:
                 results = np.array(Parallel(n_jobs=self.config.cores)(delayed(Maps._get_outer_pixel_values)(self.config, mode, outer_pix) for outer_pix in todo_pix[start_idx:end_idx]))
                 excluded = np.bool(results[:,0])
                 values = results[:,1:]
 
-            self._update_map_data(values, excluded, start_pix=todo_pix[start_idx], end_pix=todo_pix[end_idx-1])
+            self._update_map_data(values, excluded, todo_pix[start_idx:end_idx])
 
             for k in self:
                 self._flush_map(k)
@@ -234,40 +242,25 @@ class Maps:
 
 #region Plotting
 
-    def _get_default_norm(self, key):
-        match key:
-            case 'simple-galaxy':
-                return 'log'
-            case 'simple-galaxy-inner-average':
-                return 'log'
-
-        return None
-
-    def _get_default_title(self, key):
-        match key:
-            case 'simple-galaxy':
-                return 'Simple Galaxy Model'
-            case 'simple-galaxy-inner-average':
-                return 'Simple Galaxy Model (Inner Average)'
-
-        return f"{key} Map"
-
     def plot(self,
              key=None,                    # key of the map to plot (None=all maps)
              projection='default',        # mollweide, cart, aitoff, lambert, hammer, 3d, polar
              coordsys='default',          # celstial, galactic, ecliptic
              direction='default',         # longitude direction ('astro' = east towards left, 'geo' = east towards right)
              rotation=None,               # longitudinal rotation angle in degrees
-             longitude_grid_spacing = 30, # set x axis grid spacing in degrees
-             latitude_grid_spacing = 30,  # set y axis grid spacing in degrees
+             longitude_grid_spacing=30,   # set x axis grid spacing in degrees
+             latitude_grid_spacing=30,    # set y axis grid spacing in degrees
              cbar=True,                   # display the colorbar
              cmap='viridis',              # specify the colormap
              norm='default',              # color normalization
+             vmin=None,                   # minimum value for color normalization
+             vmax=None,                   # maximum value for color normalization
              unit=None,                   # text describing the data unit
              unit_format='%.1f',          # number format of data unit
              hours=True,                  # display RA in hours
              title=None,                  # set title of the plot
-             xsize=800                    # size of the image
+             xsize=800,                   # size of the image
+             width=None                   # figure width
         ):
 
         if key is not None:
@@ -281,11 +274,14 @@ class Maps:
                        cbar,
                        cmap,
                        norm,
+                       vmin,
+                       vmax,
                        unit,
                        unit_format,
                        hours,
                        title,
-                       xsize
+                       xsize,
+                       width
             )
         else:
             for k in self:
@@ -299,11 +295,14 @@ class Maps:
                            cbar,
                            cmap,
                            norm,
+                           vmin,
+                           vmax,
                            unit,
                            unit_format,
                            hours,
                            title,
-                           xsize
+                           xsize,
+                           width
                 )
 
     def _plot_map(self, key,
@@ -316,11 +315,14 @@ class Maps:
                   cbar,
                   cmap,
                   norm,
+                  vmin,
+                  vmax,
                   unit,
                   unit_format,
                   hours,
                   title,
-                  xsize
+                  xsize,
+                  width
         ):
 
         if projection == 'default':
@@ -373,15 +375,22 @@ class Maps:
                 hours = False
 
         if norm == 'default':
-            norm = self._get_default_norm(key)
+            norm = Maps._get_default_norm(key)
 
         if title is None:
-            title = self._get_default_title(key)
+            title = Maps._get_default_title(key)
+
+        if unit is None:
+            unit, unit_format = Maps._get_default_unit(key)
 
         cb_orientation = 'vertical' if projection == 'cart' else 'horizontal'
 
+        values = self.get_map_values(key).copy()
+        if 'log' in norm:
+            values[values <= 0] = np.nan
+
         healpy.projview(
-            self._get_map_values(key),
+            values,
             nest=True,
             coord=['C', coord],
             flip=direction,
@@ -398,9 +407,12 @@ class Maps:
             format=unit_format,
             title=title,
             xsize=xsize,
+            width=width,
             cbar=cbar,
             cmap=cmap,
             norm=norm,
+            min=vmin,
+            max=vmax,
             cb_orientation=cb_orientation,
             xtick_label_color=xtick_label_color
         )
@@ -429,16 +441,17 @@ class Maps:
 
     @staticmethod
     def _get_map_filename(config, key):
-        return f"{config.folder}/{key}.fits"
+        return f"{config.folder}/{key}-hpx{config.outer_level}.fits"
 
     @staticmethod
     def _get_outer_pixel_path(config, outer_pix):
         coord = healpix.get_skycoord(config.outer_level, outer_pix)
-        return f"{config.folder}/inner/{int(coord.ra.degree/15)}h/{'+' if coord.dec.degree >= 0 else '-'}{int(np.abs(coord.dec.degree/10))*10:02}/{outer_pix}"
+        return f"{config.folder}/inner/hpx{config.outer_level}-{config.inner_level}/{int(coord.ra.degree/15)}h/{'+' if coord.dec.degree >= 0 else '-'}{int(np.abs(coord.dec.degree/10))*10:02}/{outer_pix}"
 
     @staticmethod
-    def _get_outer_pixel_values_filename(config, outer_pix):
-        return f"{Maps._get_outer_pixel_path(config, outer_pix)}/values.pkl"
+    def _get_gaia_path(config, outer_pix):
+        coord = healpix.get_skycoord(config.outer_level, outer_pix)
+        return f"{config.folder}/gaia/hpx{config.outer_level}/{int(coord.ra.degree/15)}h/{'+' if coord.dec.degree >= 0 else '-'}{int(np.abs(coord.dec.degree/10))*10:02}/{outer_pix}"
 
     @staticmethod
     def _get_inner_pixel_data_filename(config, outer_pix):
@@ -448,7 +461,7 @@ class Maps:
 
 #region Outer Pixel FITS
 
-    def _load_maps(self, force_create=False, verbose=False):
+    def _load_maps(self, read_only=False, force_create=False, verbose=False):
         for key in self.config.maps:
             filename = Maps._get_map_filename(self.config, key)
 
@@ -461,7 +474,7 @@ class Maps:
                 values = np.full((self.config.outer_npix), np.nan) # np.ma.masked_all((maps.outer_npix))
                 excluded = np.zeros((self.config.outer_npix), dtype=bool)
 
-                col0 = fits.Column(name=FITS_COLUMN_MAP_VALUE, format='D', array=values, unit=None)
+                col0 = fits.Column(name=FITS_COLUMN_MAP_VALUE, format='D', array=values, unit=Maps._get_default_unit(key)[0])
                 col1 = fits.Column(name=FITS_COLUMN_MAP_EXCLUDED, format='L', array=excluded, unit=None)
 
                 hdu = fits.BinTableHDU.from_columns([col0, col1])
@@ -480,23 +493,98 @@ class Maps:
                 if verbose:
                     print(f"Opening {filename}")
 
-            hdul = fits.open(filename, mode='update')
+            if read_only:
+                hdul = fits.open(filename, mode='readonly')
+            else:
+                hdul = fits.open(filename, mode='update')
             self[key] = hdul
 
-    def _get_map_values(self, key):
+    def get_map_values(self, key, pixs=None, coords=(), return_details=False):
+        if pixs is not None:
+            values = self[key][1].data[FITS_COLUMN_MAP_VALUE][pixs]
+
+            if not return_details:
+                return values
+
+            coords = healpix.get_skycoord(self.config.outer_level, pixs)
+
+            return Table([
+                pixs,
+                values,
+                coords.ra.degree,
+                coords.dec.degree
+            ], names=[
+                'Pix',
+                'Value',
+                'RA',
+                'Dec'
+            ])
+
+        if len(coords) > 0:
+            if len(coords) == 4:
+                frame = 'icrs'
+                (min_lon, max_lon, min_lat, max_lat) = coords
+            elif len(coords) == 5:
+                (frame, min_lon, max_lon, min_lat, max_lat) = coords
+            else:
+                raise AOMapException("Invalid number of arguments")
+
+            pixs = np.arange(self.config.outer_npix)
+            coords = healpix.get_skycoord(self.config.outer_level, pixs, frame=frame)
+
+            if frame == 'galactic':
+                lon = coords.l.degree
+                lat = coords.b.degree
+            else:
+                lon = coords.ra.degree
+                lat = coords.dec.degree
+
+            if min_lon > max_lon:
+                lon_filter = (lon >= min_lon) | (lon < max_lon)
+            else:
+                lon_filter = (lon >= min_lon) & (lon < max_lon)
+
+            lat_filter = (lat >= min_lat) & (lat < max_lat)
+
+            row_filter = lon_filter & lat_filter
+
+            values = self[key][1].data[FITS_COLUMN_MAP_VALUE][row_filter]
+
+            if not return_details:
+                return values
+
+            pixs = pixs[row_filter]
+            coords = coords[row_filter]
+
+            return Table([
+                pixs,
+                coords.ra.degree,
+                coords.dec.degree,
+                values,
+            ], names=[
+                'Pix',
+                'RA',
+                'Dec',
+                'Value'
+            ])
+
         return self[key][1].data[FITS_COLUMN_MAP_VALUE]
 
-    def _get_map_excluded(self, key):
+    def get_map_excluded(self, key):
         return self[key][1].data[FITS_COLUMN_MAP_EXCLUDED]
 
-    def _update_map_data(self, values, excluded, start_pix=0, end_pix=None):
+    def get_map_unit(self, key):
+        return self[key][1].columns[FITS_COLUMN_MAP_VALUE].unit
+
+    def _update_map_data(self, values, excluded, pixs=None):
         for j, k in enumerate(self):
-            if end_pix is None:
-                np.copyto(self._get_map_values(k), values[:,j])
-                np.copyto(self._get_map_excluded(k), excluded)
+            if pixs is None:
+                np.copyto(self.get_map_values(k), values[:,j])
+                np.copyto(self.get_map_excluded(k), excluded)
             else:
-                np.copyto(self._get_map_values(k)[start_pix:end_pix+1], values[:,j])
-                np.copyto(self._get_map_excluded(k)[start_pix:end_pix+1], excluded)
+                for i, pix in enumerate(pixs):
+                    self.get_map_values(k)[pix] = values[i,j]
+                    self.get_map_excluded(k)[pix] = excluded[i]
 
     def _flush_map(self, key):
         with prevent_interruption():
@@ -524,8 +612,45 @@ class Maps:
     ############################################################################
 
     @staticmethod
+    def _get_default_unit(key):
+        match key:
+            case 'galaxy-model':
+                return 'density', '%.1f'
+            case 'star-count':
+                return 'stars', '%.0f'
+            case 'stellar-density':
+                return 'stars/arcmin^2', '%.1f'
+
+        return ''
+
+    @staticmethod
+    def _get_default_norm(key):
+        match key:
+            case 'galaxy-model':
+                return 'log'
+            case 'star-count':
+                return 'log'
+            case 'stellar-density':
+                return 'log'
+
+        return None
+
+    @staticmethod
+    def _get_default_title(key):
+        match key:
+            case 'galaxy-model':
+                return 'Galaxy Model'
+            case 'star-count':
+                return 'Star Count'
+            case 'stellar-density':
+                return 'Stellar Density'
+
+        return f"{key} Map"
+
+    @staticmethod
     def _get_outer_pixel_values(config, mode, outer_pix):
         galactic_coord = healpix.get_skycoord(config.outer_level, outer_pix).galactic
+        pix_area = healpix.get_area(config.outer_level)
         excluded = False
 
         # Exclusions that DO NOT require inner_data go here:
@@ -533,32 +658,44 @@ class Maps:
             excluded = np.abs(galactic_coord.b.degree) < config.exclude_min_galactic_latitude
 
         if not excluded:
-            inner_data = None
+            skip = False
 
-            if not all(map in OUTER_ONLY_MAPS for map in config.maps):
-                match mode:
-                    case 'build':
-                        inner_filename = Maps._get_inner_pixel_data_filename(config, outer_pix)
-                        use_existing = os.path.isfile(inner_filename) and Maps._is_good_FITS(inner_filename)
-                    case 'rebuild':
-                        use_existing = False
-                    case 'recalc':
-                        use_existing = True
+            match mode:
+                case 'build':
+                    inner_filename = Maps._get_inner_pixel_data_filename(config, outer_pix)
+                    use_existing = os.path.isfile(inner_filename) and Maps._is_good_FITS(inner_filename)
+                case 'rebuild':
+                    use_existing = False
+                case 'recalc':
+                    use_existing = True
 
-                if use_existing:
-                    inner_data = Maps._load_inner_pixel_data(config, outer_pix)
-                else:
-                    inner_data = Maps._build_inner_pixel_data(config, outer_pix)
+            if use_existing:
+                inner_data = Maps._load_inner_pixel_data(config, outer_pix)
+            else:
+                try:
+                    inner_data = Maps._build_inner_pixel_data(config, outer_pix, num_retries=3)
                     Maps._save_inner_pixel_data(config, outer_pix, inner_data)
+                except (ConnectionResetError, FileNotFoundError) as e:
+                    skip = True
+                    print(f"Error building inner data for {outer_pix}:\n{e}")
+                    traceback.print_exc()
+
+            if skip:
+                # Leave this outer pixel to do in the future
+                excluded_and_values = np.full((1+len(config.maps)), np.nan)
+                excluded_and_values[0] = False
+                return excluded_and_values
 
             values = np.full((len(config.maps)), np.nan)
 
             for i, k in enumerate(config.maps):
                 match k:
-                    case 'simple-galaxy':
-                        values[i] = Maps._compute_galaxy_model(galactic_coord)
-                    case 'simple-galaxy-inner-average':
+                    case 'galaxy-model':
                         values[i] = np.mean(Maps._get_inner_pixel_data_column(inner_data, FITS_COLUMN_GALAXY_MODEL))
+                    case 'star-count':
+                        values[i] = np.sum(Maps._get_inner_pixel_data_column(inner_data, FITS_COLUMN_STAR_COUNT))
+                    case 'stellar-density':
+                        values[i] = np.sum(Maps._get_inner_pixel_data_column(inner_data, FITS_COLUMN_STAR_COUNT)) / pix_area.to(u.arcmin**2).value
 
             if inner_data is not None:
                 # Exclusions that DO require inner_data go here:
@@ -582,16 +719,28 @@ class Maps:
         return Maps._get_inner_pixel_data(inner_data).data[column_name]
 
     @staticmethod
-    def _build_inner_pixel_data(config, outer_pix):
+    def _build_inner_pixel_data(config, outer_pix, num_retries=3):
         cols = []
 
         # Compute Galaxy Density Model
-        _, coords, _ = healpix.get_subpixels_skycoord(config.outer_level, outer_pix, config.inner_level)
-        data = Maps._compute_galaxy_model(coords.galactic)
-        cols.append(fits.Column(name=FITS_COLUMN_GALAXY_MODEL, format='D', array=data, unit=None))
+        pixs, coords, _ = healpix.get_subpixels_skycoord(config.outer_level, outer_pix, config.inner_level)
+        galaxy_model = Maps._compute_galaxy_model(coords.galactic)
 
+        # Get Stars from Gaia
+        gaia_stars = Maps._get_gaia_stars_in_outer_pixel(config, outer_pix, num_retries=num_retries)
+
+        # Determine Inner Pixel of Gaia Stars
+        gaia_pixs = healpix.get_healpix(config.inner_level, SkyCoord(ra=gaia_stars['gaia_ra'], dec=gaia_stars['gaia_dec'], unit=(u.degree, u.degree)))
+
+        # Count Gaia Stars per Inner Pixel
+        unique, counts = np.unique(gaia_pixs, return_counts=True)
+        count_map = dict(zip(unique, counts))
+        star_count = np.array([count_map.get(p, 0) for p in pixs])
+
+        # Build FITS table
+        cols.append(fits.Column(name=FITS_COLUMN_GALAXY_MODEL, format='D', array=galaxy_model, unit='density'))
+        cols.append(fits.Column(name=FITS_COLUMN_STAR_COUNT, format='K', array=star_count, unit='stars'))
         pixel_data_hdu = fits.BinTableHDU.from_columns(cols)
-
         return fits.HDUList([fits.PrimaryHDU(), pixel_data_hdu])
 
     @staticmethod
@@ -605,7 +754,7 @@ class Maps:
     def _load_inner_pixel_data(config, outer_pix):
         filename = Maps._get_inner_pixel_data_filename(config, outer_pix)
         if not os.path.isfile(filename):
-            raise AOMapException(f"Inner data not found for outer pixel {outer_pix}. Build instead instead of reload.")
+            raise AOMapException(f"Inner data not found for outer pixel {outer_pix}")
         return fits.open(filename, mode='readonly')
 
     @staticmethod
@@ -625,5 +774,35 @@ class Maps:
         values = np.abs(values) # don't allow negatives
 
         return values
+
+#endregion
+
+#region Gaia
+
+    @staticmethod
+    def _get_gaia_stars_in_outer_pixel(config, outer_pix, num_retries=1):
+        filename = f"{Maps._get_gaia_path(config, outer_pix)}/gaia.fits"
+
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
+
+        if os.path.isfile(filename):
+            with fits.open(filename, mode='readonly') as hdul:
+                gaia_stars = Table(hdul[1].data) # pylint: disable=no-member
+        else:
+            for attempt in range(num_retries):
+                try:
+                    gaia_stars = gaia.get_stars_by_healpix(config.outer_level, outer_pix)
+                    break
+                except ConnectionResetError as e:
+                    if attempt < num_retries - 1:
+                        time.sleep(1)
+                    else:
+                        raise e
+
+            hdu = fits.BinTableHDU(gaia_stars)
+            with prevent_interruption():
+                hdu.writeto(filename, overwrite=True)
+
+        return gaia_stars
 
 #endregion

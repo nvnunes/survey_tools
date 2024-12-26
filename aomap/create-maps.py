@@ -8,16 +8,15 @@ from aomap import Maps
 
 ####################################################################################
 # Build Modes:
-#     build  : iterate over pixels in outer pixel FITS file that are NaN and
-#              so supports incremental building
-#     rebuild: recreates outer pixel FITS files, builds all inner pixel data
-#              and recalculates outer pixel values
-#     recalc : recreates outer pixel FITS files but uses existing inner pixel
-#              tables (inner.fits) to recalculate outer pixel values
+#     build  : continue building inner pixel data and calculating outer pixel values
+#              (supports incremental building)
+#     rebuild: rebuilds inner pixel data and recalculates outer pixel values
+#     recalc : only recalculates outer pixel values using existing inner pixel data
 ####################################################################################
 
 mode = 'build' # build, rebuild, recalc
+verbose = True
 
-maps = Maps.load('config.yaml', mode=mode, verbose=True)
-maps.build(mode=mode, verbose=True)
+maps = Maps.load('config.yaml', mode=mode, verbose=verbose)
+maps.build(mode=mode, verbose=verbose)
 maps.close()
