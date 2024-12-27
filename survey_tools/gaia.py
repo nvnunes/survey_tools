@@ -23,7 +23,7 @@ def _get_bounding_box(min_ra, max_ra, min_dec, max_dec):
     return ra, dec, width, height
 
 def _get_healpix_circle(level, pix):
-    coord = healpix.get_skycoord(level, pix)
+    coord = healpix.get_pixel_skycoord(level, pix)
     radius = healpix.get_resolution(level)/2 # resolution is a width so like diameter
     radius_multiple = 4 # to ensure we get all stars in the pixel
 

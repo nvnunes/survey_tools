@@ -1,37 +1,64 @@
 # Project Overview
 
+Phase 0:
+1. DONE Create FITS map, store dummy values and plot map
+1. DONE Load stars from Gaia and cache Gaia results
+1. DONE Count stars in outer pix
+1. DONE Make maps of star counts and stellar density
+1. Find promising areas for AO based on stellar density
+1. Optionally limit processing based on HEALpix level and pix
+
 Phase 1:
-1. Create FITS map, store dummy values and plot map
-1. Load stars from Gaia, save to inner FITS, count stars in outer pix, make map, optionally skip processing outer pix based on count (i.e. stellar density)
-1. Find asterism in each outer pix, reduce number of asterisms, count asterisms left within an FOV of each inner pix, make map
-1. Load dust map, optionally draw contours on map, optionally skip processing outer pix based on extinction
-1. Load region covered by Euclid EWS, optionally draw outlines on map, optionally skip processing outer pix based on region
-1. Load regions covered by important extra-galactic fields, optionally draw outlines on map, create table of average outer pix values over fields
-1. Install Tip Top and use sims to develop improved AO Quality metric
-1. Use AO Quality to select best asterism at each inner pix, record asterism stars, store AO Quality, make map
+1. Load dust map and compute extinction per inner and outer pixels
+1. Optionally draw contours of extinction on map
+1. Load regions covered by important surveys:
+    - Euclid EWS
+    - Important extra-galactic fields
+1. Optionally draw outlines of regions on map
+1. Create table with average outer pix values by extra-galactic fields
+1. Optionally limit processing based on:
+    - stellar density
+    - dust extinction
+    - region
 
 Phase 2:
+1. Find n-star asterisms in each outer pix
+1. Reduce number of overlapping asterisms
+1. Count remaining asterisms within an FOV of each inner pix
+1. Make map of average asterism counts per inner pix
+
+Phase 3:
+1. Install Tip Top and configure for reference AO system
+1. Run few simulations to verify results make sense
+1. Run AO systems over grid of NGS positions and magnitudes
+1. Use sims to develop an improved first-order AO Quality metric
+1. Use AO Quality to select best asterism at each inner pix
+    - Store AO Quality in inner.fits
+    - Store asterism star Gaia source-ids inner.fits
+1. Make map of average AO Quality per inner pix
+
+Phase 4:
 - Develop Neural Network (NN) to compute AO performance for specific instrument based on asterism properties
 - Estimate uncertainty of prediction
 - Replace AO Quality with AO performance computed using NN
 
-Phase 3:
+Phase 5:
 - Setup for massive parallelism by running in the Cloud
 - Optimize performance
 - Produce full sky maps
 
-Phase 4:
+Phase 6:
 - Create NN for asterisms of 2 stars and 1 star
 - Create NN for combinations of seeing and airmass (few steps each)
 - Create NN for other instruments (maybe)
 - Produce full sky maps for other combinations
 
-Phase 5:
+Phase 7:
 - Compare how different systems perform
 - Use maps to recommend best approach for future high-z surveys
 - Write paper describing code and making recommendations
 
-# Phase 1 - Step 1
+# Phase 0 - Step 1
 
 1. DONE configuration struct
     - DONE specify levels
@@ -79,6 +106,23 @@ Phase 5:
 1. DONE add support for exclusions
     - DONE config option to skip outer pix based on galactic latitude (use masked arrays?)
 
-# Phase 1 - Step 2
+# Phase 0 - Step 2
 
-1. TODO
+1. DONE Map of NGS Stellar Density
+    - DONE Query GAIA for count of NGS-candidates in each inner pix and store it in inner.fits
+    - DONE Cache query so that inner.fits can be rebuilt without having to re-query Gaia?
+    - DONE Map of star count and stellar density
+    - DONE Add units to plots
+1. DONE Support multiple HEALpix map levels
+    - DONE Config map_levels between inner_level and outer_level that also get generated all at same time for efficiency
+    - DONE Option when plotting to specify map_level
+1. Count NGS stars
+    - num NGS stars (defined in config, 7<=R<18?)
+    - num HPX NGS stars (inner pix with ideal stars as a surrogate for handling stars that are too close together)
+1. Find promising areas for AO based on stellar density
+    - Cut on HPX NGS star density (> what needed for asterisms of 3 stars < too crowded a field)
+    - Custom map using raw outer pixel data
+        - simple yes/no map showing ideal areas (later to include cut based on dust)
+1. Limit processing based on HEALpix level and pix:
+    - Limit plotting
+    - Limit building

@@ -25,63 +25,96 @@ def get_healpix(level, coords, frame='icrs'):
     hp = HEALPix(nside=2**level, order='nested', frame=frame)
     return hp.skycoord_to_healpix(coords)
 
-def get_skycoord(level, pix, frame='icrs'):
-    hp = HEALPix(nside=2**level, order='nested', frame=frame)
-    return hp.healpix_to_skycoord(pix)
-
 def get_boundaries(level, pix, step=1, frame='icrs'):
     hp = HEALPix(nside=2**level, order='nested', frame=frame)
     boundaries = hp.boundaries_skycoord(pix, step)
-    if len(pix) == 1:
+    if np.size(pix) == 1:
         return boundaries[0]
+
+    return boundaries
+
+def filter_skycoords(skycoords, coords, frame='icrs'):
+    if len(coords) == 4:
+        (min_lon, max_lon, min_lat, max_lat) = coords
     else:
-        return boundaries
+        raise HealpixException('Invalid number of arguments')
 
-def get_pixels(level, frame='icrs'):
-    skycoords = get_pixels_skycoord(level, frame)
+    if frame == 'galactic':
+        lon = skycoords.l.degree
+        lat = skycoords.b.degree
+    else:
+        lon = skycoords.ra.degree
+        lat = skycoords.dec.degree
 
-    pixs = np.arange(len(skycoords))
-    pixels = Table([pixs, skycoords.ra.degree, skycoords.dec.degree], names=['pix', 'ra', 'dec'])
+    if min_lon > max_lon:
+        lon_filter = (lon >= min_lon) | (lon < max_lon)
+    else:
+        lon_filter = (lon >= min_lon) & (lon < max_lon)
 
-    return pixels
+    lat_filter = (lat >= min_lat) & (lat < max_lat)
 
-def get_pixels_skycoord(level, frame='icrs'):
+    return lon_filter & lat_filter
+
+def get_pixels(level, coords=(), frame='icrs'):
+    pixs = np.arange(get_npix(level))
+    if len(coords) == 0:
+        return pixs
+    else:
+        skycoords = get_pixel_skycoord(level, pixs, frame=frame)
+        row_filter = filter_skycoords(skycoords, coords, frame=frame)
+        return pixs[row_filter]
+
+def get_pixel_skycoord(level, pixs=None, coords=(), frame='icrs'):
     hp = HEALPix(nside=2**level, order='nested', frame=frame)
+    if pixs is None:
+        pixs = get_pixels(level, coords, frame=frame)
+    return hp.healpix_to_skycoord(pixs)
 
-    pixs = np.arange(hp.npix)
-    skycoords = hp.healpix_to_skycoord(pixs)
+def get_pixel_details(level, coords=(), frame='icrs'):
+    pixs = get_pixels(level, coords, frame)
+    skycoords = get_pixel_skycoord(level, pixs=pixs, frame=frame)
+    return Table([pixs, skycoords.ra.degree, skycoords.dec.degree], names=['pix', 'ra', 'dec'])
 
-    return skycoords
+def get_parent_pix(level, pix, outer_level):
+    if outer_level > level:
+        raise HealpixException("Outer Level must be smaller than inner level")
+    return pix // 4**(level - outer_level)
 
-def get_subpixels_min_max(outer_level, outer_pix, inner_level):
-    inner_pixels_per_outer_pixel = 4**(inner_level - outer_level)
+def get_subpixel_npix(outer_level, inner_level):
+    return 4**(inner_level - outer_level)
+
+def _get_subpixels_min_max(outer_level, outer_pix, inner_level):
+    inner_pixels_per_outer_pixel = get_subpixel_npix(outer_level, inner_level)
     min_pix = outer_pix * inner_pixels_per_outer_pixel
     max_pix = min_pix + inner_pixels_per_outer_pixel
     return (min_pix, max_pix)
 
-def get_subpixels(outer_level, outer_pix, inner_level, frame='icrs'):
-    (pixs, skycoords, subpix_resolution) = get_subpixels_skycoord(outer_level, outer_pix, inner_level, frame=frame)
+def get_subpixels(outer_level, outer_pix, inner_level):
+    if inner_level <= outer_level:
+        raise HealpixException("Inner level must be larger than outer level")
 
-    subpixels = Table([pixs, skycoords.ra.degree, skycoords.dec.degree], names=['pix', 'ra', 'dec'])
+    if np.size(outer_pix) == 1:
+        (start_pixel, stop_pixel) = _get_subpixels_min_max(outer_level, outer_pix, inner_level)
+        return np.arange(start = start_pixel, stop = stop_pixel)
 
-    return (subpixels, subpix_resolution)
+    pixs = np.array([])
+    for pix in outer_pix:
+        (start_pixel, stop_pixel) = _get_subpixels_min_max(outer_level, pix, inner_level)
+        pixs = np.concatenate((pixs, np.arange(start = start_pixel, stop = stop_pixel)))
+    return pixs
 
 def get_subpixels_skycoord(outer_level, outer_pix, inner_level, frame='icrs'):
-    pixs = _get_subpixels_within_outer_pixel(outer_level, outer_pix, inner_level)
+    pixs = get_subpixels(outer_level, outer_pix, inner_level)
 
     hp = HEALPix(nside=2**inner_level, order='nested', frame=frame)
     skycoords = hp.healpix_to_skycoord(pixs)
 
+    return (pixs, skycoords)
+
+def get_subpixels_detail(outer_level, outer_pix, inner_level, frame='icrs'):
+    (pixs, skycoords) = get_subpixels_skycoord(outer_level, outer_pix, inner_level, frame=frame)
+
+    subpixels = Table([pixs, skycoords.ra.degree, skycoords.dec.degree], names=['pix', 'ra', 'dec'])
     subpix_resolution = get_resolution(inner_level)
 
-    return (pixs, skycoords, subpix_resolution)
-
-def _get_subpixels_within_outer_pixel(outer_level, outer_pix, inner_level):
-    if inner_level <= outer_level:
-        raise HealpixException("Inner Level must be larger than outer level")
-
-    (start_pixel, stop_pixel) = get_subpixels_min_max(outer_level, outer_pix, inner_level)
-
-    subpixels = np.arange(start = start_pixel, stop = stop_pixel)
-
-    return subpixels
+    return (subpixels, subpix_resolution)

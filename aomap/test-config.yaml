@@ -1,8 +1,9 @@
 folder: ../data/maps
-cores: 6                      # 1: no parallelism, >1: number of cores, -1: all cores
-chunk_multiple: 100           # 0: skip chunking, chunk_size = cores * chunk_multiple = number of pixels computed between updates to disk
-outer_level: 6                # 6: ~1 deg resolution
-inner_level: 14               # 14: ~10 arcsec resolution
+cores: 6                      #  1: no parallelism, >1: number of cores, -1: all cores
+chunk_multiple: 100           #  0: skip chunking, chunk_size = cores * chunk_multiple = number of pixels computed between updates to disk
+outer_level: 6                #  6: 55 arcmin resolution
+inner_level: 14               # 14: 13 arcsec resolution
+max_map_level: 10             # 10: 3.4 arcmin resolution
 
 maps:
   - galaxy-model

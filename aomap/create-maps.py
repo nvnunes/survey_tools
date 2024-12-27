@@ -14,9 +14,10 @@ from aomap import Maps
 #     recalc : only recalculates outer pixel values using existing inner pixel data
 ####################################################################################
 
+config_filename = 'config.yaml'
 mode = 'build' # build, rebuild, recalc
 verbose = True
 
-maps = Maps.load('config.yaml', mode=mode, verbose=verbose)
-maps.build(mode=mode, verbose=verbose)
-maps.close()
+built = Maps.build(config_filename, mode=mode, verbose=verbose)
+if built:
+    Maps.build_extra_map_levels(config_filename, verbose=verbose)
