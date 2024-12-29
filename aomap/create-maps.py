@@ -4,7 +4,7 @@
 # pylint: disable=too-few-public-methods,too-many-public-methods,too-many-instance-attributes,attribute-defined-outside-init
 # pylint: disable=invalid-name,too-many-arguments,too-many-locals,too-many-statements,too-many-branches
 
-from aomap import Maps
+import aomap
 
 ####################################################################################
 # Build Modes:
@@ -14,10 +14,9 @@ from aomap import Maps
 #     recalc : only recalculates outer pixel values using existing inner pixel data
 ####################################################################################
 
-config_filename = 'config.yaml'
 mode = 'build' # build, rebuild, recalc
 verbose = True
 
-built = Maps.build(config_filename, mode=mode, verbose=verbose)
-if built:
-    Maps.build_extra_map_levels(config_filename, verbose=verbose)
+config = aomap.read_config('config.yaml')
+aomap.build_inner(config, mode=mode, verbose=verbose)
+aomap.build_data(config, mode=mode, verbose=verbose)
