@@ -5,9 +5,18 @@ outer_level: 6                #  6: 55 arcmin resolution
 max_data_level: 9             #  9:  7 arcmin resolution
 inner_level: 14               # 14: 13 arcsec resolution
 
+ao_systems:
+  - name: GNAO-Nominal
+    band: R
+    mag_min: 10.0
+    mag_max: 18.5
+    fov: 2.0 # diameter [arcmin]
+    wfs: 3
+  - name: GNAO-Optimal
+    band: R
+    mag_min: 10.0
+    mag_max: 16.5
+    fov: 2.0 # diameter [arcmin]
+    wfs: 3
+  
 exclude_min_galactic_latitude: 0.0
-
-plot_projection: mollweide    # mollweide, cart, aitoff, lambert, hammer
-plot_coordsys: celestial      # celestial, galactic, ecliptic
-plot_direction: astro         # astro: east towards left, geo: east towards right
-plot_rotation: 90.0           # longitudinal rotation angle in degrees

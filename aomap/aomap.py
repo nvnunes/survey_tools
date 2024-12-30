@@ -51,6 +51,8 @@ FITS_COLUMN_EXCLUDED = 'EXCLUDED'
 FITS_COLUMN_PIX = 'PIX'
 FITS_COLUMN_MODEL_DENSITY = 'MODEL_DENSITY'
 FITS_COLUMN_STAR_COUNT = 'STAR_COUNT'
+FITS_COLUMN_NGS_COUNT_PREFIX = 'NGS_COUNT'
+FITS_COLUMN_NGS_PIX_PREFIX = 'NGS_PIX'
 
 #endregion
 
@@ -92,6 +94,8 @@ def read_config(config_or_filename):
         if config.max_data_level > config.inner_level:
             raise AOMapException('max_data_level must be less than or equal to inner_level')
 
+    if not hasattr(config, 'ao_systems'):
+        config.ao_systems = {}
 
     if not hasattr(config, 'exclude_min_galactic_latitude'):
         config.exclude_min_galactic_latitude = 0.0
@@ -286,6 +290,9 @@ def _create_data(config, level):
     cols.append(fits.Column(name=FITS_COLUMN_PIX, format='K', array=np.arange(npix)))
     cols.append(fits.Column(name=FITS_COLUMN_MODEL_DENSITY, format='D', array=np.zeros((npix)), unit='density'))
     cols.append(fits.Column(name=FITS_COLUMN_STAR_COUNT, format='K', array=np.zeros((npix), dtype=np.int_), unit='stars'))
+    for ao_system in config.ao_systems:
+        cols.append(fits.Column(name=_get_ngs_count_field(ao_system), format='K', array=np.zeros((npix), dtype=np.int_), unit='NGS'))
+        cols.append(fits.Column(name=_get_ngs_pix_field(ao_system), format='K', array=np.zeros((npix), dtype=np.int_), unit='NGS Pix'))
 
     hdu = fits.BinTableHDU.from_columns(cols)
     hdul = fits.HDUList([fits.PrimaryHDU(), hdu])
@@ -319,6 +326,9 @@ def _set_data_pixel_values(config, levels, level_data, outer_pix):
 
             level_data[level_index][1].data[FITS_COLUMN_MODEL_DENSITY][aggregate_data.pix] = aggregate_data.mean_model_density
             level_data[level_index][1].data[FITS_COLUMN_STAR_COUNT][aggregate_data.pix] = aggregate_data.sum_star_count
+            for i, ao_system in enumerate(config.ao_systems):
+                level_data[level_index][1].data[_get_ngs_count_field(ao_system)][aggregate_data.pix] = aggregate_data.sum_ngs_count[:,i]
+                level_data[level_index][1].data[_get_ngs_pix_field(ao_system)][aggregate_data.pix] = aggregate_data.sum_ngs_pix[:,i]
 
             level_done[level_index] = True
 
@@ -332,12 +342,20 @@ def _get_initial_aggregate_pixel_values(config, inner_data):
     aggregate_data.pix = _get_inner_pixel_data_column(inner_data, FITS_COLUMN_PIX)
     aggregate_data.mean_model_density = _get_inner_pixel_data_column(inner_data, FITS_COLUMN_MODEL_DENSITY)
     aggregate_data.sum_star_count = _get_inner_pixel_data_column(inner_data, FITS_COLUMN_STAR_COUNT)
+    if len(config.ao_systems) > 0:
+        aggregate_data.sum_ngs_count = np.zeros((len(aggregate_data.pix), len(config.ao_systems)), dtype=np.int_)
+        for i, ao_system in enumerate(config.ao_systems):
+            aggregate_data.sum_ngs_count[:,i] = _get_inner_pixel_data_column(inner_data, _get_ngs_count_field(ao_system))
+        aggregate_data.sum_ngs_pix = np.minimum(aggregate_data.sum_ngs_count, 1)
     return aggregate_data
 
 def _aggregate_pixel_values_decrease_level(config, aggregate_data):
     aggregate_data.pix = aggregate_data.pix[::4] // 4
     aggregate_data.mean_model_density = aggregate_data.mean_model_density.reshape(-1, 4).mean(axis=1)
     aggregate_data.sum_star_count = aggregate_data.sum_star_count.reshape(-1, 4).sum(axis=1)
+    if len(config.ao_systems) > 0:
+        aggregate_data.sum_ngs_count = aggregate_data.sum_ngs_count.reshape(-1, 4, len(config.ao_systems)).sum(axis=1)
+        aggregate_data.sum_ngs_pix = aggregate_data.sum_ngs_pix.reshape(-1, 4, len(config.ao_systems)).sum(axis=1)
 
 #endregion
 
@@ -424,6 +442,12 @@ def _build_inner_data(config, mode, outer_pix, force_reload_gaia):
 def _get_inner_pixel_data_column(inner_data, column_name):
     return inner_data[1].data[column_name]
 
+def _get_ngs_count_field(ao_system):
+    return f"{FITS_COLUMN_NGS_COUNT_PREFIX}_{ao_system['name'].replace('-','_').upper()}"
+
+def _get_ngs_pix_field(ao_system):
+    return f"{FITS_COLUMN_NGS_PIX_PREFIX}_{ao_system['name'].replace('-','_').upper()}"
+
 def _create_inner(config, outer_pix, num_retries=3, force_reload_gaia=False):
     # Compute Galaxy Density Model
     pixs, coords = healpix.get_subpixels_skycoord(config.outer_level, outer_pix, config.inner_level)
@@ -445,6 +469,12 @@ def _create_inner(config, outer_pix, num_retries=3, force_reload_gaia=False):
     cols.append(fits.Column(name=FITS_COLUMN_PIX, format='K', array=pixs))
     cols.append(fits.Column(name=FITS_COLUMN_MODEL_DENSITY, format='D', array=galaxy_model, unit='density'))
     cols.append(fits.Column(name=FITS_COLUMN_STAR_COUNT, format='K', array=star_count, unit='stars'))
+    for ao_system in config.ao_systems:
+        ngs_filter = (gaia_stars[f"gaia_{ao_system['band']}"] >= ao_system['mag_min']) & (gaia_stars[f"gaia_{ao_system['band']}"] < ao_system['mag_max'])
+        unique, counts = np.unique(gaia_pixs[ngs_filter], return_counts=True)
+        count_map = dict(zip(unique, counts))
+        ngs_count = np.array([count_map.get(p, 0) for p in pixs])
+        cols.append(fits.Column(name=_get_ngs_count_field(ao_system), format='K', array=ngs_count, unit='NGS'))
 
     hdu = fits.BinTableHDU.from_columns(cols)
     hdul = fits.HDUList([fits.PrimaryHDU(), hdu])
@@ -508,24 +538,67 @@ def _get_gaia_stars_in_outer_pixel(config, outer_pix, num_retries=1, force_reloa
 
 #region Map
 
-def _get_map_values(config, level, key):
-    field = key.replace('-','_').upper()
-    if 'DENSITY' in field and key != 'model-density':
-        field = field.replace('DENSITY', 'COUNT')
-        factor = 1/healpix.get_area(level).to(u.arcmin**2).value
-    else:
-        factor = 1.0
+def _get_map_values(config, level, key, ao_system):
+    hdul = _load_data(config, level)
+    data = hdul[1].data # pylint: disable=no-member
 
-    data = _load_data(config, level)
-    values = factor * data[1].data[field] # pylint: disable=no-member
-    FITS_format = data[1].columns[field].format # pylint: disable=no-member
-    unit = data[1].columns[field].unit # pylint: disable=no-member
-    data.close()
+    level_area = healpix.get_area(level).to(u.arcmin**2).value
+    inner_area = healpix.get_area(config.inner_level).to(u.arcmin**2).value
+
+    match key:
+        case _ if key.startswith('ao-friendly'):
+            if ao_system is not None:
+                fov = ao_system['fov']
+                fov_area = np.pi * (fov/2)**2
+                wfs = ao_system['wfs']
+                max_field = 'STAR_COUNT'
+                min_field = _get_ngs_pix_field(ao_system)
+                field = _get_ngs_pix_field(ao_system)
+            else:
+                fov_area = np.pi
+                wfs = 3
+                max_field = 'STAR_COUNT'
+                min_field = 'STAR_COUNT'
+                field = 'STAR_COUNT'
+
+            max_count = 1/inner_area * level_area
+            min_count = wfs/fov_area * level_area
+
+            has_values = (data[max_field] < max_count) & (data[min_field] > min_count)
+            values = np.full((len(data)), np.nan)
+            values[has_values] = data[field][has_values] / level_area
+            is_density = True
+        case _:
+            field = key.replace('-','_').upper()
+            if 'DENSITY' in field and key != 'model-density':
+                field = field.replace('DENSITY', 'COUNT')
+                factor = 1/level_area
+                is_density = True
+            else:
+                factor = 1.0
+                is_density = False
+
+            values = factor * data[field]
+
+    FITS_format = hdul[1].columns[field].format # pylint: disable=no-member
+    unit = hdul[1].columns[field].unit # pylint: disable=no-member
+    if is_density:
+        FITS_format = 'D'
+        unit = f"{unit}/arcmin^2"
+
+    hdul.close()
 
     return values, FITS_format, unit
 
 def get_map_data(config, level, key, pixs=None, coords=()):
-    values, FITS_format, unit = _get_map_values(config, level, key)
+    ao_key = next((prefix for prefix in ['ngs-count', 'ngs-pix', 'ngs-density', 'ao-friendly'] if f"{prefix}-" in key), None)
+    if ao_key is not None:
+        ao_system_name = key.replace(f"{ao_key}-",'')
+        ao_system = next((system for system in config.ao_systems if system['name'] == ao_system_name), None)
+    else:
+        ao_system = None
+
+    values, FITS_format, unit = _get_map_values(config, level, key, ao_system)
 
     if pixs is not None:
         values = values[pixs] # pylint: disable=no-member
@@ -540,7 +613,7 @@ def get_map_data(config, level, key, pixs=None, coords=()):
         values = values[row_filter]
         skycoords = skycoords[row_filter]
 
-    if 'count' in key or key.endswith('pix'):
+    if FITS_format == 'K':
         num_format = '%.0f'
     else:
         num_format = '%.1f'
@@ -554,8 +627,21 @@ def get_map_data(config, level, key, pixs=None, coords=()):
             title = 'Star Count'
         case 'star-density':
             title = 'Stellar Density'
+        case _ if key.startswith('ngs-count'):
+            title = 'NGS Count'
+        case _ if key.startswith('ngs-density'):
+            title = 'NGS Density'
+        case _ if key.startswith('ngs-pix'):
+            title = 'NGS Pix'
+        case _ if key.startswith('ngs-pix-density'):
+            title = 'NGS Pix Density'
+        case _ if key.startswith('ao-friendly'):
+            title = 'AO-Friendly Areas'
         case _:
             title = f"{key} Map"
+
+    if ao_system is not None:
+        title = f"{title} ({ao_system['name']})"
 
     map_data = StructType()
     map_data.key = key
@@ -585,11 +671,11 @@ def get_map_table(config, level, key, pixs=None, coords=()):
         'Dec'
     ])
 
-def plot_map(config, map_data,
-            projection='default',        # mollweide, cart, aitoff, lambert, hammer, 3d, polar
-            coordsys='default',          # celstial, galactic, ecliptic
-            direction='default',         # longitude direction ('astro' = east towards left, 'geo' = east towards right)
-            rotation=None,               # longitudinal rotation angle in degrees
+def plot_map(map_data,
+            projection='mollweide',      # mollweide, cart, aitoff, lambert, hammer, 3d, polar
+            coordsys='celestial',        # celestial, galactic, ecliptic
+            direction='astro',           # longitude direction ('astro' = east towards left, 'geo' = east towards right)
+            rotation=0.0,                # longitudinal rotation angle in degrees
             grid=True,                   # display grid lines
             longitude_grid_spacing=30,   # set x axis grid spacing in degrees
             latitude_grid_spacing=30,    # set y axis grid spacing in degrees
@@ -599,36 +685,12 @@ def plot_map(config, map_data,
             vmin=None,                   # minimum value for color normalization
             vmax=None,                   # maximum value for color normalization
             unit=None,                   # text describing the data unit
-            num_format='%.1f',          # number format of data unit
+            num_format=None,             # number format of data unit
             hours=True,                  # display RA in hours
             title=None,                  # set title of the plot
             xsize=800,                   # size of the image
             width=None                   # figure width
     ):
-
-    if projection == 'default':
-        if hasattr(config, 'plot_projection'):
-            projection = config.plot_projection
-        else:
-            projection = 'mollweide'
-
-    if coordsys == 'default':
-        if hasattr(config, 'plot_coordsys'):
-            coordsys = config.plot_coordsys
-        else:
-            coordsys = 'C'
-
-    if direction == 'default':
-        if hasattr(config, 'plot_direction'):
-            direction = config.plot_direction
-        else:
-            direction = 'astro'
-
-    if rotation is None:
-        if hasattr(config, 'plot_rotation'):
-            rotation = config.plot_rotation
-        else:
-            rotation = 0.0
 
     match projection:
         case 'cart' | 'cartesian':

@@ -5,7 +5,7 @@ Phase 0:
 1. DONE Load stars from Gaia and cache Gaia results
 1. DONE Count stars in outer pix
 1. DONE Make maps of star counts and stellar density
-1. Find promising areas for AO based on stellar density
+1. DONE Find promising areas for AO based on stellar density
 1. Optionally limit processing based on HEALpix level and pix
 
 Phase 1:
@@ -16,6 +16,14 @@ Phase 1:
     - Important extra-galactic fields
 1. Optionally draw outlines of regions on map
 1. Create table with average outer pix values by extra-galactic fields
+1. Find patches of sky where:
+    - higher probability of a nominal NGS asterism (NGS density = 3/FOV / factor)
+    - good probability of a single bright NGS (NGS density = 1/FOV / factor)
+        = where factor = 1 meaning 100% of healpix exceeds above limits on average
+        = try increase (corresponding lower % of healpix) if:
+            - nothing found (i.e. trade-off)
+            - remaining healpix at unreasonably low galactic latitude
+    - reasonably low extinction
 1. Optionally limit processing based on:
     - stellar density
     - dust extinction
@@ -26,6 +34,7 @@ Phase 2:
 1. Reduce number of overlapping asterisms
 1. Count remaining asterisms within an FOV of each inner pix
 1. Make map of average asterism counts per inner pix
+1. Find individual asterism in areas with otherwise low AO friendliness
 
 Phase 3:
 1. Install Tip Top and configure for reference AO system
@@ -116,13 +125,14 @@ Phase 7:
 1. DONE Support multiple HEALpix map levels
     - DONE Config map_levels between inner_level and outer_level that also get generated all at same time for efficiency
     - DONE Option when plotting to specify map_level
-1. Count NGS stars
-    - num NGS stars (defined in config, 7<=R<18?)
-    - num HPX NGS stars (inner pix with ideal stars as a surrogate for handling stars that are too close together)
-1. Find promising areas for AO based on stellar density
-    - Cut on HPX NGS star density (> what needed for asterisms of 3 stars < too crowded a field)
-    - Custom map using raw outer pixel data
-        - simple yes/no map showing ideal areas (later to include cut based on dust)
-1. Limit processing based on HEALpix level and pix:
-    - Limit plotting
-    - Limit building
+1. DONE Count NGS stars
+    - DONE Count NGS stars as defined in config
+    - DONE Count inner pix with at least one NGS pix
+    - DONE Map of NGS pix density
+1. DONE Find promising areas for AO based on stellar density
+    - DONE Cut on NGS pix density
+    - DONE Custom map using raw outer pixel data
+1. Limit processing based on HEALpix:
+    - Plot healpix boundaries and label healpix numbers at particular level
+    - Limit building to particular level and pix
+    - Limit plotting to particular level and pix (i.e. zoom in)
