@@ -9,15 +9,12 @@ import os
 import signal
 import time
 import traceback
-import warnings
 import yaml
-from matplotlib import pyplot as plt
 import numpy as np
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.table import Table
 import astropy.units as u
-import healpy
 from joblib import Parallel, delayed
 from survey_tools import gaia, healpix
 
@@ -335,7 +332,7 @@ def _set_data_pixel_values(config, levels, level_data, outer_pix):
             if np.all(level_done):
                 break
 
-        _aggregate_pixel_values_decrease_level(config, aggregate_data)
+        _aggregate_pixel_values(config, aggregate_data)
 
 def _get_initial_aggregate_pixel_values(config, inner_data):
     aggregate_data = StructType()
@@ -349,13 +346,37 @@ def _get_initial_aggregate_pixel_values(config, inner_data):
         aggregate_data.sum_ngs_pix = np.minimum(aggregate_data.sum_ngs_count, 1)
     return aggregate_data
 
-def _aggregate_pixel_values_decrease_level(config, aggregate_data):
-    aggregate_data.pix = aggregate_data.pix[::4] // 4
-    aggregate_data.mean_model_density = aggregate_data.mean_model_density.reshape(-1, 4).mean(axis=1)
-    aggregate_data.sum_star_count = aggregate_data.sum_star_count.reshape(-1, 4).sum(axis=1)
+def _aggregate_pixel_values(config, aggregate_data):
+    aggregate_data.pix = _decrease_pix_level(aggregate_data.pix)
+    aggregate_data.mean_model_density = _decrease_values_level(aggregate_data.mean_model_density, 'mean')
+    aggregate_data.sum_star_count = _decrease_values_level(aggregate_data.sum_star_count, 'sum')
     if len(config.ao_systems) > 0:
-        aggregate_data.sum_ngs_count = aggregate_data.sum_ngs_count.reshape(-1, 4, len(config.ao_systems)).sum(axis=1)
-        aggregate_data.sum_ngs_pix = aggregate_data.sum_ngs_pix.reshape(-1, 4, len(config.ao_systems)).sum(axis=1)
+        aggregate_data.sum_ngs_count = _decrease_values_level(aggregate_data.sum_ngs_count, 'sum')
+        aggregate_data.sum_ngs_pix = _decrease_values_level(aggregate_data.sum_ngs_pix, 'sum')
+
+def _decrease_pix_level(pixs, num_levels=1):
+    for _ in range(num_levels):
+        pixs = pixs[::4] // 4
+    return pixs
+
+def _decrease_values_level(values, method, num_levels=1):
+    for _ in range(num_levels):
+        if np.ndim(values) == 2:
+            reshaped_values = values.reshape(-1, 4, values.shape[1])
+        elif np.ndim(values) == 1:
+            reshaped_values = values.reshape(-1, 4)
+        else:
+            raise AOMapException('Unsupported array dimensions')
+
+        match method:
+            case 'mean':
+                values = reshaped_values.mean(axis=1)
+            case 'sum':
+                values = reshaped_values.sum(axis=1)
+            case _:
+                raise AOMapException(f"Unknown method: {method}")
+
+    return values
 
 #endregion
 
@@ -432,21 +453,37 @@ def _build_inner_data(config, mode, outer_pix, force_reload_gaia):
             return np.array([False, False])
 
         if inner_data is not None:
-            # Exclusions that DO require inner_data go here:
-            # TODO: excluded = ...
-
+            # Exclusions that DO require inner_data go here: excluded = ...
             inner_data.close()
 
     return np.array([True, excluded])
 
 def _get_inner_pixel_data_column(inner_data, column_name):
+    if column_name not in inner_data[1].columns.names:
+        column_name = _get_field_from_key(column_name)
+        if column_name not in inner_data[1].columns.names:
+            raise AOMapException(f"Column {column_name} not found in inner data")
     return inner_data[1].data[column_name]
 
+def _get_inner_pixel_data_column_format(inner_data, column_name):
+    if column_name not in inner_data[1].columns.names:
+        column_name = _get_field_from_key(column_name)
+        if column_name not in inner_data[1].columns.names:
+            raise AOMapException(f"Column {column_name} not found in inner data")
+    return inner_data[1].columns[column_name].format
+
+def _get_inner_pixel_data_column_unit(inner_data, column_name):
+    if column_name not in inner_data[1].columns.names:
+        column_name = _get_field_from_key(column_name)
+        if column_name not in inner_data[1].columns.names:
+            raise AOMapException(f"Column {column_name} not found in inner data")
+    return inner_data[1].columns[column_name].unit
+
 def _get_ngs_count_field(ao_system):
-    return f"{FITS_COLUMN_NGS_COUNT_PREFIX}_{ao_system['name'].replace('-','_').upper()}"
+    return f"{FITS_COLUMN_NGS_COUNT_PREFIX}_{_get_field_from_key(ao_system['name'])}"
 
 def _get_ngs_pix_field(ao_system):
-    return f"{FITS_COLUMN_NGS_PIX_PREFIX}_{ao_system['name'].replace('-','_').upper()}"
+    return f"{FITS_COLUMN_NGS_PIX_PREFIX}_{_get_field_from_key(ao_system['name'])}"
 
 def _create_inner(config, outer_pix, num_retries=3, force_reload_gaia=False):
     # Compute Galaxy Density Model
@@ -457,7 +494,7 @@ def _create_inner(config, outer_pix, num_retries=3, force_reload_gaia=False):
     gaia_stars = _get_gaia_stars_in_outer_pixel(config, outer_pix, num_retries=num_retries, force_reload=force_reload_gaia)
 
     # Determine Inner Pixel of Gaia Stars
-    gaia_pixs = healpix.get_healpix(config.inner_level, SkyCoord(ra=gaia_stars['gaia_ra'], dec=gaia_stars['gaia_dec'], unit=(u.degree, u.degree)))
+    gaia_pixs = healpix.get_healpix_from_skycoord(config.inner_level, SkyCoord(ra=gaia_stars['gaia_ra'], dec=gaia_stars['gaia_dec'], unit=(u.degree, u.degree)))
 
     # Count Gaia Stars per Inner Pixel
     unique, counts = np.unique(gaia_pixs, return_counts=True)
@@ -538,9 +575,47 @@ def _get_gaia_stars_in_outer_pixel(config, outer_pix, num_retries=1, force_reloa
 
 #region Map
 
-def _get_map_values(config, level, key, ao_system):
-    hdul = _load_data(config, level)
-    data = hdul[1].data # pylint: disable=no-member
+def _get_field_from_key(key):
+    return key.replace('-','_').upper()
+
+def _get_field_aggregate_method(key):
+    if 'count' in key.lower():
+        return 'sum'
+    else:
+        return 'mean'
+
+def _get_map_title(key, ao_system=None):
+    match key:
+        case 'model-density':
+            title = 'Galaxy Model'
+        case 'star-count':
+            title = 'Star Count'
+        case 'star-density':
+            title = 'Stellar Density'
+        case _ if key.startswith('ngs-count'):
+            title = 'NGS Count'
+        case _ if key.startswith('ngs-density'):
+            title = 'NGS Density'
+        case _ if key.startswith('ngs-pix'):
+            title = 'NGS Pix'
+        case _ if key.startswith('ngs-pix-density'):
+            title = 'NGS Pix Density'
+        case _ if key.startswith('ao-friendly'):
+            title = 'AO-Friendly Areas'
+        case _:
+            title = f"{key} Map"
+
+    if ao_system is not None:
+        title = f"{title} ({ao_system['name']})"
+
+    return title
+
+def _get_map_norm(key): # pylint: disable=unused-argument
+    return 'log'
+
+def _read_FITS_single_column_values(config, hdu, level, key, ao_system):
+    data = hdu.data
+    cols = hdu.columns
 
     level_area = healpix.get_area(level).to(u.arcmin**2).value
     inner_area = healpix.get_area(config.inner_level).to(u.arcmin**2).value
@@ -569,28 +644,76 @@ def _get_map_values(config, level, key, ao_system):
             values[has_values] = data[field][has_values] / level_area
             is_density = True
         case _:
-            field = key.replace('-','_').upper()
+            field = _get_field_from_key(key)
             if 'DENSITY' in field and key != 'model-density':
                 field = field.replace('DENSITY', 'COUNT')
                 factor = 1/level_area
                 is_density = True
             else:
-                factor = 1.0
+                if cols[field].format == 'K':
+                    factor = 1
+                else:
+                    factor = 1.0
                 is_density = False
 
             values = factor * data[field]
 
-    FITS_format = hdul[1].columns[field].format # pylint: disable=no-member
-    unit = hdul[1].columns[field].unit # pylint: disable=no-member
+    FITS_format = cols[field].format # pylint: disable=no-member
+    unit = cols[field].unit # pylint: disable=no-member
     if is_density:
         FITS_format = 'D'
         unit = f"{unit}/arcmin^2"
 
+    return (values, FITS_format, unit)
+
+def _read_FITS_column_values(config, hdu, level, keys, ao_system, return_details=False):
+    if not isinstance(keys, list):
+        keys = [keys]
+
+    values = []
+    FITS_formats = []
+    units = []
+
+    for key in keys:
+        (tmp_values, tmp_FITS_format, tmp_unit) = _read_FITS_single_column_values(config, hdu, level, key, ao_system)
+        values.append(tmp_values)
+        FITS_formats.append(tmp_FITS_format)
+        units.append(tmp_unit)
+
+    if len(values)==1:
+        if return_details:
+            return (values[0], FITS_formats[0], units[0])
+        return values[0]
+    else:
+        if return_details:
+            return (values, FITS_formats, units)
+        return values
+
+def _get_inner_values(config, outer_pix, keys, ao_system, return_details=False):
+    inner_data = _load_inner(config, outer_pix)
+    retval = _read_FITS_column_values(config, inner_data[1], config.inner_level, keys, ao_system, return_details=return_details)
+    inner_data.close()
+    return retval
+
+def _get_data_values(config, level, keys, ao_system, return_details=False):
+    hdul = _load_data(config, level)
+    retval = _read_FITS_column_values(config, hdul[1], level, keys, ao_system, return_details=return_details)
     hdul.close()
+    return retval
 
-    return values, FITS_format, unit
+def get_map_data(config, map_level, key, level=None, pixs=None, coords=(), allow_slow=False):
+    if pixs is not None and level is None:
+        raise AOMapException('level required if pixs is provided')
 
-def get_map_data(config, level, key, pixs=None, coords=()):
+    if level is not None and pixs is None:
+        raise AOMapException('pixs required if level is provided')
+
+    if level is not None and level >= map_level:
+        raise AOMapException('level must be less than map_level')
+
+    if pixs is not None and not (isinstance(pixs, list) or isinstance(pixs, np.ndarray)):
+        pixs = [pixs]
+
     ao_key = next((prefix for prefix in ['ngs-count', 'ngs-pix', 'ngs-density', 'ao-friendly'] if f"{prefix}-" in key), None)
     if ao_key is not None:
         ao_system_name = key.replace(f"{ao_key}-",'')
@@ -598,66 +721,87 @@ def get_map_data(config, level, key, pixs=None, coords=()):
     else:
         ao_system = None
 
-    values, FITS_format, unit = _get_map_values(config, level, key, ao_system)
+    if map_level > config.max_data_level:
+        if pixs is None:
+            raise AOMapException('pixs required as full sky maps at this level are not supported')
 
-    if pixs is not None:
-        values = values[pixs] # pylint: disable=no-member
+        if map_level > config.inner_level:
+            raise AOMapException(f"map_level must be less than oe equal to {config.inner_level}")
+
+        if level >= config.inner_level:
+            raise AOMapException(f"level must be less than {config.inner_level}")
+
+        if level < config.outer_level:
+            outer_pixs = healpix.get_subpixels(level, pixs, config.outer_level)
+            level = config.outer_level
+        elif level > config.outer_level:
+            outer_pixs = []
+            for pix in pixs:
+                tmp_outer_pixs = healpix.get_parent_pixel(level, pix, config.outer_level)
+                if tmp_outer_pixs not in outer_pixs:
+                    outer_pixs.append(tmp_outer_pixs)
+        else:
+            outer_pixs = pixs
+
+        max_outer_pix = 100
+        if len(outer_pixs) > max_outer_pix and not allow_slow:
+            raise AOMapException('map will take a long time to build, set allow_slow=True to continue or use lower map level')
+
+        ([map_pixs, map_values], [_, FITS_format], [_, unit]) = _get_inner_values(config, outer_pixs[0], ['pix', key], ao_system, return_details=True)
+
+        if len(pixs) > 1:
+            for outer_pix in outer_pixs[1:]:
+                [tmp_map_pixs, tmp_map_values] = _get_inner_values(config, outer_pix, ['pix', key], ao_system)
+                map_pixs = np.concatenate((map_pixs, tmp_map_pixs))
+                map_values = np.concatenate((map_values, tmp_map_values))
+
+        if level > config.outer_level:
+            inner_filter = healpix.get_subpixel_indexes(level, pixs, config.inner_level, config.outer_level)
+            map_pixs = map_pixs[inner_filter]
+            map_values = map_values[inner_filter]
+
+        if map_level < config.inner_level:
+            map_pixs = _decrease_pix_level(map_pixs, config.inner_level - map_level)
+            map_values = _decrease_values_level(map_values, _get_field_aggregate_method(key), config.inner_level - map_level)
     else:
-        pixs = np.arange(healpix.get_npix(level))
+        ([map_pixs, map_values], [_, FITS_format], [_, unit]) = _get_data_values(config, max(map_level, config.outer_level), ['pix', key], ao_system, return_details=True)
 
-    skycoords = healpix.get_pixel_skycoord(level, pixs)
+        if map_level < config.outer_level:
+            map_pixs = _decrease_pix_level(map_pixs, config.outer_level - map_level)
+            map_values = _decrease_values_level(map_values, _get_field_aggregate_method(key), config.outer_level - map_level)
+
+        if pixs is not None:
+            map_pixs = healpix.get_subpixels(level, pixs, map_level)
+            map_values = map_values[map_pixs]
+
+    map_coords = healpix.get_pixel_skycoord(map_level, map_pixs)
 
     if len(coords) > 0:
-        row_filter = healpix.filter_skycoords(skycoords, coords)
-        pixs = pixs[row_filter]
-        values = values[row_filter]
-        skycoords = skycoords[row_filter]
+        row_filter = healpix.filter_skycoords(map_coords, coords)
+        map_pixs = map_pixs[row_filter]
+        map_values = map_values[row_filter]
+        map_coords = map_coords[row_filter]
 
     if FITS_format == 'K':
         num_format = '%.0f'
     else:
         num_format = '%.1f'
 
-    norm = 'log'
-
-    match key:
-        case 'model-density':
-            title = 'Galaxy Model'
-        case 'star-count':
-            title = 'Star Count'
-        case 'star-density':
-            title = 'Stellar Density'
-        case _ if key.startswith('ngs-count'):
-            title = 'NGS Count'
-        case _ if key.startswith('ngs-density'):
-            title = 'NGS Density'
-        case _ if key.startswith('ngs-pix'):
-            title = 'NGS Pix'
-        case _ if key.startswith('ngs-pix-density'):
-            title = 'NGS Pix Density'
-        case _ if key.startswith('ao-friendly'):
-            title = 'AO-Friendly Areas'
-        case _:
-            title = f"{key} Map"
-
-    if ao_system is not None:
-        title = f"{title} ({ao_system['name']})"
-
     map_data = StructType()
     map_data.key = key
-    map_data.level = level
-    map_data.pixs = pixs
-    map_data.values = values
-    map_data.coords = skycoords
+    map_data.level = map_level
+    map_data.pixs = map_pixs
+    map_data.values = map_values
+    map_data.coords = map_coords
     map_data.FITS_format = FITS_format
     map_data.unit = unit
     map_data.num_format = num_format
-    map_data.norm = norm
-    map_data.title = title
+    map_data.norm = _get_map_norm(key)
+    map_data.title = _get_map_title(key)
     return map_data
 
-def get_map_table(config, level, key, pixs=None, coords=()):
-    map_data = get_map_data(config, level, key, pixs, coords)
+def get_map_table(config, map_level, key, level=None, pixs=None, coords=()):
+    map_data = get_map_data(config, map_level, key, level=level, pixs=pixs, coords=coords)
 
     return Table([
         map_data.pixs,
@@ -671,115 +815,119 @@ def get_map_table(config, level, key, pixs=None, coords=()):
         'Dec'
     ])
 
-def plot_map(map_data,
-            projection='mollweide',      # mollweide, cart, aitoff, lambert, hammer, 3d, polar
-            coordsys='celestial',        # celestial, galactic, ecliptic
-            direction='astro',           # longitude direction ('astro' = east towards left, 'geo' = east towards right)
-            rotation=0.0,                # longitudinal rotation angle in degrees
-            grid=True,                   # display grid lines
-            longitude_grid_spacing=30,   # set x axis grid spacing in degrees
-            latitude_grid_spacing=30,    # set y axis grid spacing in degrees
-            cbar=True,                   # display the colorbar
-            cmap='viridis',              # specify the colormap
-            norm='default',              # color normalization
-            vmin=None,                   # minimum value for color normalization
-            vmax=None,                   # maximum value for color normalization
-            unit=None,                   # text describing the data unit
-            num_format=None,             # number format of data unit
-            hours=True,                  # display RA in hours
-            title=None,                  # set title of the plot
-            xsize=800,                   # size of the image
-            width=None                   # figure width
+def plot_map(map_data=None,
+            mapcoord='C',                  # C: celestial, G: galactic, E: ecliptic
+            projection='astro',            # astro | cart [hours | degrees | longitude]
+            rotation=None,                 # longitudinal rotation angle in degrees
+            width=None,                    # figure width
+            height=None,                   # figure height
+            xsize=None,                    # x-axis pixel dimensions
+            ysize=None,                    # y-axis pixel dimensions
+            grid=True,                     # display grid lines
+            grid_longitude_spacing=30,     # x axis grid spacing in degrees
+            grid_latitude_spacing=30,      # y axis grid spacing in degrees
+            cmap=None,                     # specify the colormap
+            norm=None,                     # color normalization
+            cbar=True,                     # display the colorbar
+            cbar_ticks=None,               # colorbar ticks
+            cbar_format=None,              # colorbar number format
+            cbar_unit=None,                # colorbar unit
+            boundaries_level=None,         # HEALpix level for boundaries
+            boundaries_pixs=None,          # HEALpix pixels for boundaries
+            title=None                     # plot title
     ):
 
-    match projection:
-        case 'cart' | 'cartesian':
-            projection = 'cart'
-            xtick_label_color = 'black'
-            ra_offset = -longitude_grid_spacing
-        case _:
-            xtick_label_color = (0.9,0.9,0.9)
-            ra_offset = longitude_grid_spacing
+    match mapcoord.lower():
+        case 'celestial' | 'cel' | 'c':
+            mapcoord = 'C'
+        case 'galactic' | 'gal' | 'g':
+            mapcoord = 'G'
+        case 'ecliptic' | 'ecl' | 'e':
+            mapcoord = 'E'
 
-    match coordsys:
-        case 'celestial' | 'cel' | 'c' | 'C':
-            coord = 'C'
+    projection_words = projection.lower().split()
+    if 'astro' in projection_words:
+        projection = 'mollweide'
+    elif 'cart' in projection_words or 'cartesian' in projection_words:
+        projection = 'cartesian'
+    else:
+        projection = projection_words[0]
+
+    if 'hours' in projection_words:
+        grid_longitude_type = 'hours'
+    elif 'degrees' in projection_words:
+        grid_longitude_type = 'degrees'
+    elif 'longitude' in projection_words:
+        grid_longitude_type = 'longitude'
+    elif mapcoord == 'C':
+        grid_longitude_type = 'hours'
+    else:
+        grid_longitude_type = 'degrees'
+
+    flip = True
+
+    match mapcoord:
+        case 'C':
             xlabel = 'RA'
             ylabel = 'DEC'
-        case 'galactic' | 'gal' | 'g' | 'G':
-            coord = 'G'
+        case 'G':
             xlabel = 'GLON'
             ylabel = 'GLAT'
-            hours = False
-        case 'ecliptic' | 'ecl' | 'e' | 'E':
-            coord = 'E'
+        case 'E':
             xlabel = 'ELON'
             ylabel = 'ELAT'
-            hours = False
 
-    if norm == 'default':
-        norm = map_data.norm
+    if map_data is None:
+        values = None
+        level = None
+        pixs = None
+    else:
+        level = map_data.level
+        values = map_data.values
+        if len(values) == healpix.get_npix(level):
+            pixs = None
+        else:
+            pixs = map_data.pixs
 
-    if title is None:
-        title = map_data.title
+        if norm is None:
+            norm = map_data.norm
+        if cbar_unit is None:
+            cbar_unit = map_data.unit
+        if cbar_format is None:
+            cbar_format = map_data.num_format
+        if title is None:
+            title = map_data.title
 
-    if unit is None:
-        unit = map_data.unit
+    if norm is not None and 'log' in norm and values is not None and np.any(values <= 0):
+        values = values.astype(float, copy=True)
+        values[values <= 0.0] = np.nan
 
-    if num_format is None:
-        num_format = map_data.num_format
-
-    cb_orientation = 'vertical' if projection == 'cart' else 'horizontal'
-
-    values = map_data.values.copy()
-    if 'log' in norm:
-        values[values <= 0] = np.nan
-
-    healpy.projview(
-        values,
-        nest=True,
-        coord=['C', coord],
-        flip=direction,
-        projection_type=projection,
-        graticule=grid,
-        graticule_labels=grid,
-        phi_convention='symmetrical',
-        rot=rotation,
-        longitude_grid_spacing=longitude_grid_spacing,
-        latitude_grid_spacing=latitude_grid_spacing,
-        xlabel=xlabel,
-        ylabel=ylabel,
-        unit=unit,
-        format=num_format,
-        title=title,
-        xsize=xsize,
-        width=width,
-        cbar=cbar,
-        cmap=cmap,
-        norm=norm,
-        min=vmin,
-        max=vmax,
-        cb_orientation=cb_orientation,
-        xtick_label_color=xtick_label_color
-    )
-
-    ax = plt.gca()
-
-    ax.set_axisbelow(False) # hack to show grid lines on top of the image
-
-    if hours:
-        if rotation % longitude_grid_spacing != 0.0:
-            raise AOMapException(f"rot {rotation} must be a multiple of {longitude_grid_spacing}")
-
-        tick_hours = np.linspace(-12+ra_offset/15+rotation/15, 12-ra_offset/15+rotation/15, len(ax.xaxis.majorTicks))
-        tick_hours[tick_hours < 0] += 24
-
-        if direction == 'astro':
-            tick_hours = np.flip(tick_hours)
-
-        warnings.simplefilter('ignore', UserWarning)
-        ax.set_xticklabels([f"{t:.0f}h" for t in tick_hours])
-        warnings.resetwarnings()
+    healpix.plot(values, level=level, pixs=pixs, plot_properties={
+        'coords': ['C', mapcoord],
+        'projection': projection,
+        'flip': flip,
+        'rotation': rotation,
+        'xsize': xsize,
+        'ysize': ysize,
+        'width': width,
+        'height': height,
+        'cmap': cmap,
+        'norm': norm,
+        'grid': grid,
+        'grid_labels': grid,
+        'grid_longitude_spacing': grid_longitude_spacing,
+        'grid_latitude_spacing': grid_latitude_spacing,
+        'grid_longitude_type': grid_longitude_type,
+        'cbar': cbar,
+        'cbar_ticks': cbar_ticks,
+        'cbar_format': cbar_format,
+        'cbar_unit': cbar_unit,
+        'boundaries_level': boundaries_level,
+        'boundaries_pixs': boundaries_pixs,
+        'title': title,
+        'xlabel': xlabel,
+        'ylabel': ylabel
+    })
 
 def save_map(config, map_data, filename=None, overwrite=False):
     if filename is None:

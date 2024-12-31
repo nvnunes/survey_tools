@@ -132,7 +132,13 @@ Phase 7:
 1. DONE Find promising areas for AO based on stellar density
     - DONE Cut on NGS pix density
     - DONE Custom map using raw outer pixel data
-1. Limit processing based on HEALpix:
-    - Plot healpix boundaries and label healpix numbers at particular level
+1. Miscellaneous:
+    - DONE Plot healpix boundaries and label healpix numbers at particular level
+    - DONE Limit plotting to particular level and pix
     - Limit building to particular level and pix
-    - Limit plotting to particular level and pix (i.e. zoom in)
+
+# Other
+
+1. Plotting improvements:
+    - Dynamic grid spacing and tick labels
+    - Gnomonic projection (Omega Centauri should be round!)

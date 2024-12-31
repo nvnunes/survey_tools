@@ -1,8 +1,0 @@
-folder: ../data/maps
-cores: 6                      #  1: no parallelism, >1: number of cores, -1: all cores
-chunk_multiple: 100           #  0: skip chunking, chunk_size = cores * chunk_multiple = number of pixels computed between updates to disk
-outer_level: 6                #  6: 55 arcmin resolution
-max_data_level: 9             #  9:  7 arcmin resolution
-inner_level: 14               # 14: 13 arcsec resolution
-
-exclude_min_galactic_latitude: 0.0
