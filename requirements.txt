@@ -8,3 +8,4 @@ regions
 compress_pickle
 tabulate
 astropy-healpix
+joblib

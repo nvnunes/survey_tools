@@ -1063,7 +1063,11 @@ def get_redshift_spec(catalog_data, idx_or_filter = None, force_catalog_name = N
                 z_spec_flag[value_filter] = 9
 
         case 'FMOS':
-            # zFlag>=1 is given for objects with approved detection of >=1 emission line(s).
+            # zFlag=0: No emission line detected.
+            # zFlag=1: Presence of a single emission line detected at 1.5 <= S/N < 3.
+            # zFlag=2: One emission line detected at 3 <= S/N < 5.
+            # zFlag=3: One emission line detected at S/N >= 5.
+            # zFlag=4: One emission line at S/N >= 5 and a second line at S/N >= 3 that confirms the redshift.
             # zFlag=-1 for flux calibration stars.
             # zFlag=-99 if the spectroscopy failed.
             if N == 1:

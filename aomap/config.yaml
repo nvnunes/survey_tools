@@ -1,0 +1,25 @@
+folder: ../data/maps
+cores: 6                      #  1: no parallelism, >1: number of cores, -1: all cores
+chunk_multiple: 100           #  0: skip chunking, chunk_size = cores * chunk_multiple = number of pixels computed between updates to disk
+outer_level: 6                #  6: 55 arcmin resolution
+max_data_level: 9             #  9:  7 arcmin resolution
+inner_level: 14               # 14: 13 arcsec resolution
+
+build_level: 1                # limit building to specific level
+build_pixs: 26                # limit building to specific pixels
+
+ao_systems:
+  - name: GNAO-Nominal
+    band: R
+    mag_min: 10.0
+    mag_max: 18.5
+    fov: 2.0 # diameter [arcmin]
+    wfs: 3
+  - name: GNAO-Optimal
+    band: R
+    mag_min: 10.0
+    mag_max: 16.5
+    fov: 2.0 # diameter [arcmin]
+    wfs: 3
+  
+exclude_min_galactic_latitude: 0.0
