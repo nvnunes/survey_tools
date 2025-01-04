@@ -91,6 +91,15 @@ def read_config(config_or_filename):
         if config.max_data_level > config.inner_level:
             raise AOMapException('max_data_level must be less than or equal to inner_level')
 
+    if not hasattr(config, 'build_level'):
+        config.build_level = None
+
+    if not hasattr(config, 'build_pixs'):
+        config.build_pixs = None
+
+    if not isinstance(config.build_pixs, list):
+        config.build_pixs = [config.build_pixs]
+
     if not hasattr(config, 'ao_systems'):
         config.ao_systems = {}
 
@@ -139,6 +148,26 @@ def _get_inner_pixel_data_filename(config, outer_pix):
 def build_inner(config_or_filename, mode='recalc', pixs=None, force_reload_gaia=False, max_pixels=None, verbose=False):
     config = read_config(config_or_filename)
 
+    if config.build_level is not None and config.build_level >= config.outer_level:
+        raise AOMapException('build_level must be less than outer_level')
+
+    if config.build_level is not None and config.build_pixs is None:
+        raise AOMapException('build_pixs required if build_level is provided')
+
+    if config.build_level is None and config.build_pixs is not None:
+        raise AOMapException('build_level required if build_pixs is provided')
+
+    if config.build_pixs is None:
+        build_pixs = None
+    else:
+        if config.build_level == config.outer_level:
+            build_pixs = config.build_pixs
+        else:
+            build_pixs = healpix.get_subpixels(config.build_level, config.build_pixs, config.outer_level)
+        
+    if build_pixs is not None and pixs is not None and not np.all(np.isin(pixs, build_pixs)):
+        raise AOMapException('pixs must be included in build_pixs')
+
     force_create = mode.startswith('re') and pixs is None
     _create_outer(config, force_create=force_create)
     outer = _load_outer(config)
@@ -155,6 +184,8 @@ def build_inner(config_or_filename, mode='recalc', pixs=None, force_reload_gaia=
     todo = np.zeros((npix), dtype=bool)
     if pixs is not None:
         todo[pixs] = True
+    elif build_pixs is not None:
+        todo[build_pixs] = ~done[build_pixs] & ~excluded[build_pixs]
     else:
         todo = ~done & ~excluded
 
@@ -167,6 +198,9 @@ def build_inner(config_or_filename, mode='recalc', pixs=None, force_reload_gaia=
         if verbose:
             print(f"Building inner pixels at level {config.inner_level} already done")
         return
+
+    if build_pixs is not None and verbose:
+        print(f"Building total of {len(todo_pix)}/{len(build_pixs)} outer pixs")
 
     if max_pixels is not None and max_pixels < len(todo_pix):
         todo_pix = todo_pix[:max_pixels]
@@ -218,6 +252,8 @@ def build_inner(config_or_filename, mode='recalc', pixs=None, force_reload_gaia=
 def build_data(config_or_filename, mode='build', verbose = False):
     config = read_config(config_or_filename)
 
+    allow_missing_inner_data = config.build_level is not None and config.build_pixs is not None
+
     force_create = mode.startswith('re')
 
     levels = []
@@ -258,7 +294,7 @@ def build_data(config_or_filename, mode='build', verbose = False):
 
         # NOTE: parallelizing the following isn't effective as it is disk IO limited
         for outer_pix in range(outer_start_pix, outer_end_pix):
-            _set_data_pixel_values(config, levels, level_data, outer_pix)
+            _set_data_pixel_values(config, levels, level_data, outer_pix, allow_missing_inner_data=allow_missing_inner_data)
 
         for data in level_data:
             data.flush()
@@ -307,10 +343,13 @@ def _load_data(config, level, update=False):
         raise AOMapException(f"Data file not found: {filename}")
     return fits.open(filename, mode='update' if update else 'readonly')
 
-def _set_data_pixel_values(config, levels, level_data, outer_pix):
+def _set_data_pixel_values(config, levels, level_data, outer_pix, allow_missing_inner_data=False):
     inner_filename = _get_inner_pixel_data_filename(config, outer_pix)
     if not os.path.isfile(inner_filename) or not _is_good_FITS(inner_filename):
-        raise AOMapException(f"Inner data not found for outer pixel {outer_pix}")
+        if allow_missing_inner_data:
+            return
+        else:
+            raise AOMapException(f"Inner data not found for outer pixel {outer_pix}")
 
     inner_data = _load_inner(config, outer_pix)
     aggregate_data = _get_initial_aggregate_pixel_values(config, inner_data)

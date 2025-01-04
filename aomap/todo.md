@@ -1,12 +1,12 @@
 # Project Overview
 
-Phase 0:
+DONE Phase 0:
 1. DONE Create FITS map, store dummy values and plot map
 1. DONE Load stars from Gaia and cache Gaia results
 1. DONE Count stars in outer pix
 1. DONE Make maps of star counts and stellar density
 1. DONE Find promising areas for AO based on stellar density
-1. Optionally limit processing based on HEALpix level and pix
+1. DONE Optionally limit processing based on HEALpix level and pix
 
 Phase 1:
 1. Load dust map and compute extinction per inner and outer pixels
@@ -132,10 +132,10 @@ Phase 7:
 1. DONE Find promising areas for AO based on stellar density
     - DONE Cut on NGS pix density
     - DONE Custom map using raw outer pixel data
-1. Miscellaneous:
+1. DONE Miscellaneous:
     - DONE Plot healpix boundaries and label healpix numbers at particular level
     - DONE Limit plotting to particular level and pix
-    - Limit building to particular level and pix
+    - DONE Limit building to particular level and pix
 
 # Other
 

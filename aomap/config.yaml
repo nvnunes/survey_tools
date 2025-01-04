@@ -5,6 +5,9 @@ outer_level: 6                #  6: 55 arcmin resolution
 max_data_level: 9             #  9:  7 arcmin resolution
 inner_level: 14               # 14: 13 arcsec resolution
 
+build_level: 1                # limit building to specific level
+build_pixs: 26                # limit building to specific pixels
+
 ao_systems:
   - name: GNAO-Nominal
     band: R
