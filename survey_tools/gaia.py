@@ -56,17 +56,25 @@ def _get_star_count(ra, dec, radius=None, box=(), level=None, pix=None, verbose=
     region_clause = _get_region_clause(ra, dec, radius=radius, box=box)
     level_clause = _get_level_clause(level, pix)
 
-    job = Gaia.launch_job_async("SELECT COUNT(*)"
-                                "  FROM gaiadr3.gaia_source"
-                               f" WHERE 1 = CONTAINS(POINT('ICRS', ra, dec), {region_clause}))"
-                               f"   {level_clause}"
-                                "   AND in_qso_candidates = '0'"
-                                "   AND in_galaxy_candidates = '0'"
-                            , verbose=verbose)
+    query = f"""
+SELECT COUNT(*)
+  FROM gaiadr3.gaia_source
+ WHERE 1 = CONTAINS(POINT('ICRS', ra, dec), {region_clause})
+       {level_clause}
+   AND in_qso_candidates = '0'
+   AND in_galaxy_candidates = '0'
+    """
+
+    if verbose:
+        job = Gaia.launch_job_async(query, verbose=True)
+    else:
+        with open(os.devnull, 'w') as fnull: # pylint: disable=unspecified-encoding
+            with redirect_stdout(fnull), redirect_stderr(fnull):
+                job = Gaia.launch_job_async(query)
 
     results = job.get_results()
 
-    return results[0]
+    return results['COUNT_ALL'].filled().value[0]
 
 def _get_stars(ra, dec, radius=None, box=(), level=None, pix=None, verbose=False):
     region_clause = _get_region_clause(ra, dec, radius=radius, box=box)

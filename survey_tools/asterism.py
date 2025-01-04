@@ -181,8 +181,8 @@ def _add_asterism(buffer, star_indexes, star_data, id_field, ra_field, dec_field
     buffer.N += 1
     buffer.idx += 1
     buffer.key       [-1][buffer.idx] = key
-    buffer.ra        [-1][buffer.idx] = centre_ra*180.0/np.pi
-    buffer.dec       [-1][buffer.idx] = centre_dec*180/np.pi
+    buffer.ra        [-1][buffer.idx] = np.rad2deg(centre_ra)
+    buffer.dec       [-1][buffer.idx] = np.rad2deg(centre_dec)
     buffer.num_stars [-1][buffer.idx] = num_stars
     buffer.star1_idx [-1][buffer.idx] = star_indexes[0]
     buffer.star1_id  [-1][buffer.idx] = id1
