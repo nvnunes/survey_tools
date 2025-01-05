@@ -164,7 +164,7 @@ def build_inner(config_or_filename, mode='recalc', pixs=None, force_reload_gaia=
             build_pixs = config.build_pixs
         else:
             build_pixs = healpix.get_subpixels(config.build_level, config.build_pixs, config.outer_level)
-        
+
     if build_pixs is not None and pixs is not None and not np.all(np.isin(pixs, build_pixs)):
         raise AOMapException('pixs must be included in build_pixs')
 
@@ -863,8 +863,8 @@ def plot_map(map_data=None,
             xsize=None,                    # x-axis pixel dimensions
             ysize=None,                    # y-axis pixel dimensions
             grid=True,                     # display grid lines
-            grid_longitude_spacing=30,     # x axis grid spacing in degrees
-            grid_latitude_spacing=30,      # y axis grid spacing in degrees
+            grid_longitude_spacing=None,   # x axis grid spacing in degrees
+            grid_latitude_spacing=None,    # y axis grid spacing in degrees
             cmap=None,                     # specify the colormap
             norm=None,                     # color normalization
             cbar=True,                     # display the colorbar

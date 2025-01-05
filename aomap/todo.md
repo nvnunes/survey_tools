@@ -140,5 +140,10 @@ Phase 7:
 # Other
 
 1. Plotting improvements:
-    - Dynamic grid spacing and tick labels
-    - Gnomonic projection (Omega Centauri should be round!)
+    - DONE Dynamic grid spacing and tick labels
+    - Gnomonic projection using SkyProj (Omega Centauri should be round!)
+    - Support for setting range on Mollweide projection
+    - Support for McBryde projection (see SkyProj)
+    - Support for Equal Earth projection (see SkyProj)
+    - Support for Polar projection (see Laea in SkyProj)
+    - Support for Oblique Mollweide projection (see SkyProj)

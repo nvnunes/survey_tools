@@ -10,8 +10,7 @@ from matplotlib import pyplot as plt
 import matplotlib.colors
 from matplotlib.patches import Polygon
 import matplotlib.projections
-from matplotlib.ticker import MultipleLocator
-import matplotlib.ticker
+from matplotlib.ticker import Formatter, MultipleLocator
 import numpy as np
 from astropy.table import Table
 from astropy.coordinates import Longitude, Latitude
@@ -240,10 +239,6 @@ def _set_default_plot_properties(values, plot_properties=None):
       set x axis grid spacing in degrees. Default: 60
     grid_latitude_spacing : float
       set y axis grid spacing in degrees. Default: 30
-    grid_custom_xtick_labels : list
-      override x-axis tick labels
-    grid_custom_ytick_labels : list
-      override y-axis tick labels
     cbar : bool, optional
       Show the colorbar. Default: True
     cbar_extend : str, optional
@@ -609,12 +604,37 @@ def _plot_data(values, level, pixs,
         shading='auto'
     )
 
-class LongitudeFormatter(matplotlib.projections.geo.GeoAxes.ThetaFormatter):
+class DegreesFormatter(Formatter):
+    def __init__(self, round_to=1.0): # pylint: disable=useless-parent-delegation
+        self._round_to = round_to
+
+    def __call__(self, x, pos=None):
+        degrees = np.rad2deg(x)
+        degrees = round(degrees / self._round_to) * self._round_to
+
+        d = int(degrees)
+        m = int(np.round((degrees - d) * 60, 5))
+        s = int(np.round((degrees - d - m/60.0) * 3600, 2))
+
+        if m == 0 and s == 0:
+            return f"{d:.0f}\N{DEGREE SIGN}"
+
+        if s == 0:
+            return f"{d:.0f}\N{DEGREE SIGN}{m:0>2.0f}\N{PRIME}"
+
+        if s % 1 == 0:
+            sec_format = '0>2.0f'
+        else:
+            sec_format = '0>2.1f'
+
+        return f"{d:.0f}\N{DEGREE SIGN}{m:0>2.0f}\N{PRIME}{s:{sec_format}}\N{DOUBLE PRIME}"
+
+class LongitudeFormatter(DegreesFormatter):
     def __init__(self, round_to=1.0): # pylint: disable=useless-parent-delegation
         super().__init__(round_to)
 
-    def __call__(self, x, pos=None):
-        x = (x + np.pi) % (2*np.pi) - np.pi
+    def __call__(self, x, pos=None): # pylint: disable=useless-parent-delegation
+        x = x % (2*np.pi)
         return super().__call__(x, pos)
 
 class RotatedLongitudeFormatter(LongitudeFormatter):
@@ -627,15 +647,15 @@ class RotatedLongitudeFormatter(LongitudeFormatter):
         x = (x + self._rotation)*(-1 if self._flip else 1)
         return super().__call__(x, pos)
 
-class DegreesFormatter(matplotlib.projections.geo.GeoAxes.ThetaFormatter):
+class SymmetricLongitudeFormatter(DegreesFormatter):
     def __init__(self, round_to=1.0): # pylint: disable=useless-parent-delegation
         super().__init__(round_to)
 
     def __call__(self, x, pos=None):
-        x = x % (2*np.pi)
+        x = (x + np.pi) % (2*np.pi) - np.pi
         return super().__call__(x, pos)
 
-class RotatedDegreesFormatter(DegreesFormatter):
+class RotatedSymmetricLongitudeFormatter(SymmetricLongitudeFormatter):
     def __init__(self, round_to=1.0, rotation=0.0, flip=False):
         super().__init__(round_to)
         self._rotation = rotation
@@ -645,16 +665,30 @@ class RotatedDegreesFormatter(DegreesFormatter):
         x = (x + self._rotation)*(-1 if self._flip else 1)
         return super().__call__(x, pos)
 
-class RightAscensionFormatter(matplotlib.ticker.Formatter):
+class RightAscensionFormatter(Formatter):
     def __init__(self, round_to=1.0):
-        self._round_to = round_to
+        self._round_to = round_to/15 # convert round_to from degrees to hours
 
     def __call__(self, x, pos=None):
-        degrees = round(np.rad2deg(x) / self._round_to) * self._round_to
-        hours = degrees / 15
-        if hours < 0:
-            hours += 24
-        return f"{hours:.0f}h"
+        hours = np.rad2deg(x)/15 + (24 if x < 0 else 0)
+        hours = round(hours / self._round_to) * self._round_to
+
+        h = int(hours)
+        m = int(np.round((hours - h) * 60, 5))
+        s = int(np.round((hours - h - m/60.0) * 3600, 2))
+
+        if m == 0 and s == 0:
+            return f"{h:.0f}\u02B0"
+
+        if s == 0:
+            return f"{h:.0f}\u02B0{m:0>2.0f}\u1D50"
+
+        if s % 1 == 0:
+            sec_format = '0>2.0f'
+        else:
+            sec_format = '0>2.1f'
+
+        return f"{h:.0f}\u02B0{m:0>2.0f}\u1D50{s:{sec_format}}\u02E2"
 
 class RotatedRightAscensionFormatter(RightAscensionFormatter):
     def __init__(self, round_to=1.0, rotation=0.0, flip=False):
@@ -666,12 +700,45 @@ class RotatedRightAscensionFormatter(RightAscensionFormatter):
         x = (x + self._rotation)*(-1 if self._flip else 1)
         return super().__call__(x, pos)
 
-class LatitudeFormatter(matplotlib.projections.geo.GeoAxes.ThetaFormatter):
-    def __init__(self, round_to=1.0): # pylint: disable=useless-parent-delegation
-        super().__init__(round_to)
+def _round_angular_tick_spacing(ticks, is_hours=False):
+    tick_spacing = np.diff(ticks)[0]
+    tick_range = np.abs(ticks[0]-ticks[-1])
 
-    def __call__(self, x, pos=None): # pylint: disable=useless-parent-delegation
-        return super().__call__(x, pos)
+    if is_hours:
+        tick_spacing = tick_spacing / 15.0
+        tick_range = tick_range / 15.0
+        factor = 15.0
+    else:
+        factor = 1
+
+    if tick_spacing > 1:
+        round_to_factor = 1
+        if is_hours:
+            round_to_options = [6,4,3,2,1]
+        else:
+            round_to_options = [90,60,45,30,15,10,5,4,3,2,1]
+    elif tick_spacing*60 > 1:
+        round_to_factor = 60
+        round_to_options = [30,20,15,10,5,1]
+    else:
+        round_to_factor = 3600
+        if tick_spacing*3600 > 1:
+            round_to_options = [30,20,15,10,5,1]
+        else:
+            round_to_options = [0.5,0.1]
+
+    round_to_index = np.argmin(np.abs(tick_spacing*round_to_factor - round_to_options))
+    round_to = round_to_options[round_to_index] / round_to_factor
+
+    if tick_range/round_to > 5 and round_to_index > 0:
+        round_to_index = round_to_index-1
+        round_to = round_to_options[round_to_index] / round_to_factor
+
+    if tick_range/round_to < 2 and round_to_index < len(round_to_options)-1:
+        round_to_index = round_to_index+1
+        round_to = round_to_options[round_to_index] / round_to_factor
+
+    return factor * round_to
 
 def _plot_grid(
         projection='cartesian',
@@ -679,11 +746,9 @@ def _plot_grid(
         flip=False,
         grid=True,
         grid_labels=True,
-        grid_longitude_spacing=60,
-        grid_latitude_spacing=30,
+        grid_longitude_spacing=None,
+        grid_latitude_spacing=None,
         grid_longitude_type=None,
-        grid_custom_xtick_labels=None,
-        grid_custom_ytick_labels=None,
         colors=None,
         fontname=None,
         fontsize=None,
@@ -694,6 +759,12 @@ def _plot_grid(
     if grid:
         plt.grid(True, color=colors['gridline'])
         ax.set_axisbelow(False) # Fix to force grid lines to be on top of the image
+
+        if grid_longitude_spacing is None:
+            grid_longitude_spacing = _round_angular_tick_spacing(np.rad2deg(ax.get_xticks()), is_hours=grid_longitude_type=='hours')
+
+        if grid_latitude_spacing is None:
+            grid_latitude_spacing = _round_angular_tick_spacing(np.rad2deg(ax.get_yticks()))
 
         if projection in GEOGRAPHIC_PROJECTIONS:
             ax.set_longitude_grid(grid_longitude_spacing)
@@ -708,17 +779,11 @@ def _plot_grid(
             case 'hours':
                 ax.xaxis.set_major_formatter(RotatedRightAscensionFormatter(grid_longitude_spacing, rotation=np.deg2rad(rotation), flip=flip))
             case 'degrees':
-                ax.xaxis.set_major_formatter(RotatedDegreesFormatter(grid_longitude_spacing, rotation=np.deg2rad(rotation), flip=flip))
-            case _:
                 ax.xaxis.set_major_formatter(RotatedLongitudeFormatter(grid_longitude_spacing, rotation=np.deg2rad(rotation), flip=flip))
+            case _:
+                ax.xaxis.set_major_formatter(RotatedSymmetricLongitudeFormatter(grid_longitude_spacing, rotation=np.deg2rad(rotation), flip=flip))
 
-        ax.yaxis.set_major_formatter(LatitudeFormatter(grid_latitude_spacing))
-
-        if grid_custom_xtick_labels is not None:
-            ax.xaxis.set_ticklabels(grid_custom_xtick_labels)
-
-        if grid_custom_ytick_labels is not None:
-            ax.yaxis.set_ticklabels(grid_custom_ytick_labels)
+        ax.yaxis.set_major_formatter(DegreesFormatter(grid_latitude_spacing))
 
         ax.tick_params(axis='x', labelfontfamily=fontname, labelsize=fontsize['xtick_label'], colors=colors['grid_xtick_label'])
         ax.tick_params(axis='y', labelfontfamily=fontname, labelsize=fontsize['ytick_label'], colors=colors['grid_ytick_label'])
