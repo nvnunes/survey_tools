@@ -7,7 +7,6 @@
 import copy
 import matplotlib as mpl
 from matplotlib import pyplot as plt
-from matplotlib.ticker import Formatter
 from mpl_toolkits.axisartist import angle_helper
 import numpy as np
 from astropy.table import Table
@@ -182,26 +181,26 @@ def plot(values, level=None, pixs=None, skycoords=None, plot_properties=None):
         'ytick.labelcolor': plot_properties['colors']['ytick_label'], # not supported in skyproj 1.x
         'ytick.labelsize': plot_properties['fontsize']['ytick_label']
     }):
-        fig = plt.figure(figsize=(plot_properties['width'], plot_properties['height']), dpi=plot_properties['dpi'])
+        fig, ax = plt.subplots(figsize=(plot_properties['width'], plot_properties['height']), dpi=plot_properties['dpi'])
 
         kwargs = {
             'celestial': plot_properties['flip'],
             'galactic': plot_properties['mapcoord'] == 'G',
             'lon_0': plot_properties['rotation'],
             'gridlines': plot_properties['grid'],
-            'longitude_ticks': 'symmetric' if plot_properties['grid_longitude'] == 'longitude' else 'positive',
+            'longitude_ticks': 'symmetric' if plot_properties['grid_longitude'] == 'degrees' else 'positive',
         }
 
         match plot_properties['projection']:
             case 'mollweide':
-                sp = skyproj.MollweideSkyproj(**kwargs)
+                sp = skyproj.MollweideSkyproj(ax, **kwargs)
             case 'gnomonic':
-                sp = skyproj.GnomonicSkyproj(**kwargs)
+                sp = skyproj.GnomonicSkyproj(ax, **kwargs)
             case _:
-                sp = skyproj.Skyproj(**kwargs)
+                sp = skyproj.Skyproj(ax, **kwargs)
 
         plot_properties['fig'] = fig
-        plot_properties['ax'] = fig.gca()
+        plot_properties['ax'] = fig.gca() # reload ax after skyproj
         plot_properties['sp'] = sp
 
         _draw_map(values, level, pixs, skycoords, **plot_properties) # pylint: disable=possibly-used-before-assignment
@@ -511,7 +510,7 @@ def _draw_grid(
 
     # The following is a HACK to add support for:
     # 1. Longitude in Hours instead of Degrees
-    # 2. Tick labels with minutes and seconds as needed
+    # 2. Tick with minute and second divisions if appropriate 
 
     grid_helper = gridlines._grid_helper # pylint: disable=protected-access
 
@@ -528,32 +527,31 @@ def _draw_grid(
 
     match grid_longitude:
         case 'hours':
-            lon_formatter = RightAscensionFormatter()
-            lon_locator = angle_helper.LocatorHMS(n_grid_lon, include_last=zoom)
-        case 'degrees':
-            lon_formatter = LongitudeFormatter()
-            lon_locator = angle_helper.LocatorDMS(n_grid_lon, include_last=zoom)
-        case _:
-            lon_formatter = SymmetricLongitudeFormatter()
-            lon_locator = angle_helper.LocatorDMS(n_grid_lon, include_last=zoom)
+            class WrappedFormatterHMS(angle_helper.FormatterHMS):
+                def __init__(self):
+                    self._formatter = skyproj.mpl_utils.WrappedFormatterDMS(180, sp._longitude_ticks) # pylint: disable=protected-access
 
-    lat_formatter = DegreesFormatter()
+                def __call__(self, direction, factor, values):
+                    return super().__call__(direction, factor, self._formatter._wrap_values(factor, values))
+
+            lon_locator = angle_helper.LocatorHMS(n_grid_lon, include_last=zoom)
+            lon_formatter = WrappedFormatterHMS()
+        case _:
+            lon_locator = angle_helper.LocatorDMS(n_grid_lon, include_last=zoom)
+            lon_formatter = None
+
     lat_locator = angle_helper.LocatorDMS(n_grid_lat, include_last=True)
 
     if is_old_version:
-        sp._tick_formatter1 = lon_formatter # pylint: disable=protected-access
-        sp._tick_formatter2 = lat_formatter # pylint: disable=protected-access
-        grid_helper.update_grid_finder(
-            grid_locator1 = lon_locator,
-            grid_locator2 = lat_locator,
-            tick_formatter1 = lon_formatter,
-            tick_formatter2 = lat_formatter
-        )
+        grid_helper.update_grid_finder(grid_locator1 = lon_locator, grid_locator2 = lat_locator)
+        if lon_formatter is not None:
+            sp._tick_formatter1 = lon_formatter # pylint: disable=protected-access
+            grid_helper.update_grid_finder(tick_formatter1 = lon_formatter)
     else:
         grid_helper._grid_locator_lon = lon_locator # pylint: disable=protected-access
-        grid_helper._tick_formatters['lon'] = lon_formatter # pylint: disable=protected-access
         grid_helper._grid_locator_lat = lat_locator # pylint: disable=protected-access
-        grid_helper._tick_formatters['lat'] = lat_formatter # pylint: disable=protected-access
+        if lon_formatter is not None:
+            grid_helper._tick_formatters['lon'] = lon_formatter # pylint: disable=protected-access
 
     x1, x2 = ax.get_xlim()
     y1, y2 = ax.get_ylim()
@@ -672,129 +670,5 @@ def _finish_plot(
 
     if ylabel is not None:
         ax.set_ylabel(ylabel, fontsize=fontsize['ylabel'])
-
-#endregion
-
-#region Tick Formatters
-
-def _get_values(*args):
-    if len(args) == 3:
-        (_, factor, values) = args
-    else:
-        factor = 1.0
-        values = args[0]
-
-    if not isinstance(values, np.ndarray):
-        if isinstance(values, list):
-            values = np.array(values)
-        else:
-            values = np.array([values])
-
-    return values / factor
-
-class DegreesFormatter(Formatter):
-    def __init__(self, round_to=None, radians=False): # pylint: disable=useless-parent-delegation
-        self._round_to = round_to
-        self._radians = radians
-
-    def __call__(self, *args):
-        values = _get_values(*args)
-
-        if len(values) == 0:
-            return []
-
-        if self._radians:
-            values = np.rad2deg(values)
-
-        if self._round_to is not None:
-            values = np.round(values / self._round_to) * self._round_to
-
-        d = np.trunc(values).astype(int)
-        m = np.floor(np.round((values - d) * 60, 5)).astype(int)
-        s = np.round((values - d - m/60.0) * 3600, 2)
-
-        labels = []
-        for i in range(len(values)):
-            if m[i] == 0 and s[i] == 0:
-                labels.append(f"{d[i]:.0f}\N{DEGREE SIGN}")
-            elif s[i] == 0:
-                labels.append(f"{d[i]:.0f}\N{DEGREE SIGN}{m[i]:0>2.0f}\N{PRIME}")
-            else:
-                if s[i] % 1 == 0:
-                    sec_format = '0>2.0f'
-                else:
-                    sec_format = '0>2.1f'
-
-                labels.append(f"{d[i]:.0f}\N{DEGREE SIGN}{m[i]:0>2.0f}\N{PRIME}{s[i]:{sec_format}}\N{DOUBLE PRIME}")
-
-        return labels
-
-class LongitudeFormatter(DegreesFormatter):
-    def __init__(self, round_to=None, radians=False): # pylint: disable=useless-parent-delegation
-        super().__init__(round_to, radians)
-
-    def __call__(self, *args): # pylint: disable=useless-parent-delegation
-        values = _get_values(*args)
-        if len(values) == 0:
-            return []
-        if self._radians:
-            values = values % (2*np.pi)
-        else:
-            values = values % 360
-        return super().__call__(values)
-
-class SymmetricLongitudeFormatter(DegreesFormatter):
-    def __init__(self, round_to=None, radians=False): # pylint: disable=useless-parent-delegation
-        super().__init__(round_to, radians)
-
-    def __call__(self, *args):
-        values = _get_values(*args)
-        if len(values) == 0:
-            return []
-        if self._radians:
-            values = (values + np.pi) % (2*np.pi) - np.pi
-        else:
-            values = (values + 180) % (360) - 180
-        return super().__call__(values)
-
-class RightAscensionFormatter(Formatter):
-    def __init__(self, round_to=None, radians=False):
-        self._round_to = round_to/15 if round_to is not None else None # convert round_to from degrees to hours
-        self._radians = radians
-
-    def __call__(self, *args):
-        values = _get_values(*args)
-
-        if len(values) == 0:
-            return []
-
-        if self._radians:
-            values = np.rad2deg(values)
-
-        values = values/15
-        values[values<0] += 24
-
-        if self._round_to is not None:
-            values = np.round(values / self._round_to) * self._round_to
-
-        h = np.trunc(values).astype(int)
-        m = np.floor(np.round((values - h) * 60, 5)).astype(int)
-        s = np.round((values - h - m/60.0) * 3600, 2)
-
-        labels = []
-        for i in range(len(values)):
-            if m[i] == 0 and s[i] == 0:
-                labels.append(f"{h[i]:.0f}\u02B0")
-            elif s[i] == 0:
-                labels.append(f"{h[i]:.0f}\u02B0{m[i]:0>2.0f}\u1D50")
-            else:
-                if s[i] % 1 == 0:
-                    sec_format = '0>2.0f'
-                else:
-                    sec_format = '0>2.1f'
-
-                labels.append(f"{h[i]:.0f}\u02B0{m[i]:0>2.0f}\u1D50{s[i]:{sec_format}}\u02E2")
-
-        return labels
 
 #endregion
