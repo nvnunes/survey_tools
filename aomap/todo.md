@@ -136,9 +136,3 @@ Phase 7:
     - DONE Plot healpix boundaries and label healpix numbers at particular level
     - DONE Limit plotting to particular level and pix
     - DONE Limit building to particular level and pix
-
-# Other
-
-1. Plotting improvements:
-    - Dynamic grid spacing and tick labels
-    - Gnomonic projection (Omega Centauri should be round!)

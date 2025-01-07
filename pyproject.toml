@@ -23,7 +23,8 @@ dependencies = [
     "compress_pickle",
     "tabulate",
     "astropy-healpix",
-    "joblib"
+    "joblib",
+    "skyproj"
 ]
 dynamic = ["version"]
 

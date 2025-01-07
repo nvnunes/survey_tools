@@ -164,7 +164,7 @@ def build_inner(config_or_filename, mode='recalc', pixs=None, force_reload_gaia=
             build_pixs = config.build_pixs
         else:
             build_pixs = healpix.get_subpixels(config.build_level, config.build_pixs, config.outer_level)
-        
+
     if build_pixs is not None and pixs is not None and not np.all(np.isin(pixs, build_pixs)):
         raise AOMapException('pixs must be included in build_pixs')
 
@@ -855,16 +855,15 @@ def get_map_table(config, map_level, key, level=None, pixs=None, coords=()):
     ])
 
 def plot_map(map_data=None,
-            mapcoord='C',                  # C: celestial, G: galactic, E: ecliptic
+            galactic=False,                # rotate map from celestial to galactic coordinates
             projection='astro',            # astro | cart [hours | degrees | longitude]
+            zoom=None,                     # zoom in on the map
             rotation=None,                 # longitudinal rotation angle in degrees
             width=None,                    # figure width
             height=None,                   # figure height
+            dpi=None,                      # figure dpi
             xsize=None,                    # x-axis pixel dimensions
-            ysize=None,                    # y-axis pixel dimensions
             grid=True,                     # display grid lines
-            grid_longitude_spacing=30,     # x axis grid spacing in degrees
-            grid_latitude_spacing=30,      # y axis grid spacing in degrees
             cmap=None,                     # specify the colormap
             norm=None,                     # color normalization
             cbar=True,                     # display the colorbar
@@ -873,60 +872,23 @@ def plot_map(map_data=None,
             cbar_unit=None,                # colorbar unit
             boundaries_level=None,         # HEALpix level for boundaries
             boundaries_pixs=None,          # HEALpix pixels for boundaries
-            title=None                     # plot title
+            title=None,                    # plot title
+            tissot=False,                  # display Tissot's indicatrices
+            milkyway=False,                # display outline of Milky Way
+            milkyway_width=None            # number of degrees north/south to draw dotted line
     ):
-
-    match mapcoord.lower():
-        case 'celestial' | 'cel' | 'c':
-            mapcoord = 'C'
-        case 'galactic' | 'gal' | 'g':
-            mapcoord = 'G'
-        case 'ecliptic' | 'ecl' | 'e':
-            mapcoord = 'E'
-
-    projection_words = projection.lower().split()
-    if 'astro' in projection_words:
-        projection = 'mollweide'
-    elif 'cart' in projection_words or 'cartesian' in projection_words:
-        projection = 'cartesian'
-    else:
-        projection = projection_words[0]
-
-    if 'hours' in projection_words:
-        grid_longitude_type = 'hours'
-    elif 'degrees' in projection_words:
-        grid_longitude_type = 'degrees'
-    elif 'longitude' in projection_words:
-        grid_longitude_type = 'longitude'
-    elif mapcoord == 'C':
-        grid_longitude_type = 'hours'
-    else:
-        grid_longitude_type = 'degrees'
-
-    flip = True
-
-    match mapcoord:
-        case 'C':
-            xlabel = 'RA'
-            ylabel = 'DEC'
-        case 'G':
-            xlabel = 'GLON'
-            ylabel = 'GLAT'
-        case 'E':
-            xlabel = 'ELON'
-            ylabel = 'ELAT'
 
     if map_data is None:
         values = None
         level = None
         pixs = None
+        skycoords = None
+        zoom = False
     else:
         level = map_data.level
         values = map_data.values
-        if len(values) == healpix.get_npix(level):
-            pixs = None
-        else:
-            pixs = map_data.pixs
+        pixs = map_data.pixs
+        skycoords = map_data.coords
 
         if norm is None:
             norm = map_data.norm
@@ -937,26 +899,61 @@ def plot_map(map_data=None,
         if title is None:
             title = map_data.title
 
+    if galactic:
+        xlabel = 'GLON'
+        ylabel = 'GLAT'
+    else:
+        xlabel = 'RA'
+        ylabel = 'DEC'
+
+    projection_words = projection.lower().split()
+
+    if zoom is None:
+        if pixs is not None and len(pixs) < healpix.get_npix(level):
+            zoom = (max(map_data.coords.ra.degree) - min(map_data.coords.ra.degree)) < 180
+            if zoom:
+                rotation = (rotation if rotation is not None else 0) + np.mean(map_data.coords.ra.degree)
+        else:
+            zoom = False
+
+    if 'astro' in projection_words:
+        if zoom:
+            projection = 'gnomonic'
+        else:
+            projection = 'mollweide'
+    elif 'cart' in projection_words or 'cartesian' in projection_words:
+        projection = 'cartesian'
+    else:
+        projection = projection_words[0]
+
+    if 'hours' in projection_words:
+        grid_longitude = 'hours'
+    elif 'degrees' in projection_words:
+        grid_longitude = 'degrees'
+    elif 'longitude' in projection_words:
+        grid_longitude = 'longitude'
+    elif galactic:
+        grid_longitude = 'degrees'
+    else:
+        grid_longitude = 'hours'
+
     if norm is not None and 'log' in norm and values is not None and np.any(values <= 0):
         values = values.astype(float, copy=True)
         values[values <= 0.0] = np.nan
 
-    healpix.plot(values, level=level, pixs=pixs, plot_properties={
-        'coords': ['C', mapcoord],
+    return healpix.plot(values, level=level, pixs=pixs, skycoords=skycoords, plot_properties={
+        'galactic': galactic,
         'projection': projection,
-        'flip': flip,
+        'zoom': zoom,
         'rotation': rotation,
         'xsize': xsize,
-        'ysize': ysize,
         'width': width,
         'height': height,
+        'dpi': dpi,
         'cmap': cmap,
         'norm': norm,
         'grid': grid,
-        'grid_labels': grid,
-        'grid_longitude_spacing': grid_longitude_spacing,
-        'grid_latitude_spacing': grid_latitude_spacing,
-        'grid_longitude_type': grid_longitude_type,
+        'grid_longitude': grid_longitude,
         'cbar': cbar,
         'cbar_ticks': cbar_ticks,
         'cbar_format': cbar_format,
@@ -965,7 +962,10 @@ def plot_map(map_data=None,
         'boundaries_pixs': boundaries_pixs,
         'title': title,
         'xlabel': xlabel,
-        'ylabel': ylabel
+        'ylabel': ylabel,
+        'tissot': tissot,
+        'milkyway': milkyway,
+        'milkyway_width': milkyway_width
     })
 
 def save_map(config, map_data, filename=None, overwrite=False):
