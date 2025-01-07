@@ -200,9 +200,6 @@ def plot(values, level=None, pixs=None, skycoords=None, plot_properties=None):
             case _:
                 sp = skyproj.Skyproj(**kwargs)
 
-        if 'tissot' in plot_properties and plot_properties['tissot']:
-            sp.tissot_indicatrices()
-
         plot_properties['fig'] = fig
         plot_properties['ax'] = fig.gca()
         plot_properties['sp'] = sp
@@ -211,6 +208,18 @@ def plot(values, level=None, pixs=None, skycoords=None, plot_properties=None):
         _draw_grid(**plot_properties)
         _draw_cbar(**plot_properties)
         _draw_boundaries(**plot_properties)
+
+        if plot_properties.get('milkyway', False):
+            sp.draw_milky_way(
+                width=plot_properties['milkyway_width'] if plot_properties.get('milkyway_width', None) is not None else 10,
+                linewidth=1.5,
+                color=plot_properties['colors']['milkyway'],
+                linestyle='-'
+            )
+
+        if plot_properties.get('tissot', False):
+            sp.tissot_indicatrices()
+
         _finish_plot(**plot_properties)
 
         return fig
@@ -327,7 +336,8 @@ def _set_default_plot_properties(values, plot_properties=None):
         'grid': (0.8,0.8,0.8) if values is not None else (0.5,0.5,0.5),
         'xtick_label': 'black',
         'ytick_label': 'black',
-        'boundaries': 'red'
+        'boundaries': 'red',
+        'milkyway': 'black'
     }
 
     if plot_properties['projection'] in GLOBE_PROJECTIONS:

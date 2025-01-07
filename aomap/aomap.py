@@ -873,7 +873,9 @@ def plot_map(map_data=None,
             boundaries_level=None,         # HEALpix level for boundaries
             boundaries_pixs=None,          # HEALpix pixels for boundaries
             title=None,                    # plot title
-            tissot=False                   # display Tissot's indicatrices
+            tissot=False,                  # display Tissot's indicatrices
+            milkyway=False,                # display outline of Milky Way
+            milkyway_width=None            # number of degrees north/south to draw dotted line
     ):
 
     if map_data is None:
@@ -961,7 +963,9 @@ def plot_map(map_data=None,
         'title': title,
         'xlabel': xlabel,
         'ylabel': ylabel,
-        'tissot': tissot
+        'tissot': tissot,
+        'milkyway': milkyway,
+        'milkyway_width': milkyway_width
     })
 
 def save_map(config, map_data, filename=None, overwrite=False):
