@@ -9,3 +9,4 @@ compress_pickle
 tabulate
 astropy-healpix
 joblib
+skyproj

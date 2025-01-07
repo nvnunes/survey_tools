@@ -5,18 +5,17 @@
 # pylint: disable=invalid-name,too-many-arguments,too-many-locals,too-many-statements,too-many-branches
 
 import copy
-import matplotlib
+import matplotlib as mpl
 from matplotlib import pyplot as plt
-import matplotlib.colors
-from matplotlib.patches import Polygon
-import matplotlib.projections
-from matplotlib.ticker import Formatter, MultipleLocator
+from matplotlib.ticker import Formatter
+from mpl_toolkits.axisartist import angle_helper
 import numpy as np
 from astropy.table import Table
-from astropy.coordinates import Longitude, Latitude
+from astropy.coordinates import SkyCoord
 import astropy.units as u
 import astropy_healpix as healpix
 from astropy_healpix import HEALPix
+import skyproj
 from survey_tools.utility.rotator import Rotator
 
 class HealpixException(Exception):
@@ -45,9 +44,9 @@ def is_npix_valid(npix):
 
 #region SkyCoords
 
-def get_healpix_from_skycoord(level, coords, frame='icrs'):
+def get_healpix_from_skycoord(level, skycoords, frame='icrs'):
     hp = HEALPix(nside=_get_nside(level), order='nested', frame=frame)
-    return hp.skycoord_to_healpix(coords)
+    return hp.skycoord_to_healpix(skycoords)
 
 def get_boundaries_skycoord(level, pixs=None, step=1, frame='icrs'):
     hp = HEALPix(nside=_get_nside(level), order='nested', frame=frame)
@@ -174,23 +173,49 @@ def get_subpixels_detail(outer_level, outer_pix, inner_level, frame='icrs'):
 
 #region Plotting
 
-def plot(values, level=None, pixs=None, plot_properties=None):
+def plot(values, level=None, pixs=None, skycoords=None, plot_properties=None):
     _set_default_plot_properties(values, plot_properties)
 
-    fig = plt.figure(figsize=(plot_properties['width'], plot_properties['height']))
-    fig.add_subplot(1, 1, 1, projection=(None if plot_properties.get('projection') == 'cartesian' else plot_properties['projection']))
+    with mpl.rc_context({
+        'xtick.labelcolor': plot_properties['colors']['xtick_label'], # not supported in skyproj 1.x
+        'xtick.labelsize': plot_properties['fontsize']['xtick_label'],
+        'ytick.labelcolor': plot_properties['colors']['ytick_label'], # not supported in skyproj 1.x
+        'ytick.labelsize': plot_properties['fontsize']['ytick_label']
+    }):
+        fig = plt.figure(figsize=(plot_properties['width'], plot_properties['height']), dpi=plot_properties['dpi'])
 
-    data_plot = _plot_data(values, level, pixs, **plot_properties)
-    _plot_grid(**plot_properties)
-    _plot_cbar(data_plot, values, **plot_properties)
-    _plot_boundaries(**plot_properties)
-    _finish_plot(**plot_properties)
+        kwargs = {
+            'celestial': plot_properties['flip'],
+            'galactic': plot_properties['mapcoord'] == 'G',
+            'lon_0': plot_properties['rotation'],
+            'gridlines': plot_properties['grid'],
+            'longitude_ticks': 'symmetric' if plot_properties['grid_longitude'] == 'longitude' else 'positive',
+        }
 
-    return fig
+        match plot_properties['projection']:
+            case 'mollweide':
+                sp = skyproj.MollweideSkyproj(**kwargs)
+            case 'gnomonic':
+                sp = skyproj.GnomonicSkyproj(**kwargs)
+            case _:
+                sp = skyproj.Skyproj(**kwargs)
 
-GEOGRAPHIC_PROJECTIONS = ['aitoff', 'hammer', 'lambert', 'mollweide']
-DEFAULT_LONGITUDE_RANGE = [-180, 180]
-DEFAULT_LATITUDE_RANGE = [-90, 90]
+        if 'tissot' in plot_properties and plot_properties['tissot']:
+            sp.tissot_indicatrices()
+
+        plot_properties['fig'] = fig
+        plot_properties['ax'] = fig.gca()
+        plot_properties['sp'] = sp
+
+        _draw_map(values, level, pixs, skycoords, **plot_properties) # pylint: disable=possibly-used-before-assignment
+        _draw_grid(**plot_properties)
+        _draw_cbar(**plot_properties)
+        _draw_boundaries(**plot_properties)
+        _finish_plot(**plot_properties)
+
+        return fig
+
+GLOBE_PROJECTIONS = ['aitoff', 'hammer', 'lambert', 'mollweide']
 
 def _update_dictionary(dict1, dict2):
     for key in dict1.keys():
@@ -201,18 +226,16 @@ def _update_dictionary(dict1, dict2):
 def _set_default_plot_properties(values, plot_properties=None):
     """Plot Parameters:
        ---------------
-    coords : sequence of character, optional
-      Either one of 'G', 'E' or 'C' to describe the coordinate system of the
-      map, or a sequence of 2 of these to rotate the map from the first to the
-      second coordinate system. default: 'G'
+    galactic : bool, optional
+      If True, the plot will be in galactic coordinates. Default: False
     projection :  {'aitoff', 'hammer', 'lambert', 'mollweide', 'cartesian', 'polar'}
       type of the plot
     flip : bool, optional
-      Defines the convention of projection:
-        False (geo) - default, east towards roght, west towards left
-        True (astro) - east towards left, west towards right
+      Defines the longitude convention:
+        True (astro) - default, east towards left, west towards right
+        False (geo) - ast towards right, west towards left
     rotation : scalar, optional
-      Describe the logitudinal rotation to apply
+      Logitudinal rotation to apply
     width: scalar, optional
       Width of the plot. Default: 10
     height: scalar, optional
@@ -233,18 +256,9 @@ def _set_default_plot_properties(values, plot_properties=None):
       The maximum range value
     grid: bool
       show grid lines.
-    grid_labels : bool
-      show longitude and latitude labels.
-    grid_longitude_spacing : float
-      set x axis grid spacing in degrees. Default: 60
-    grid_latitude_spacing : float
-      set y axis grid spacing in degrees. Default: 30
     cbar : bool, optional
       Show the colorbar. Default: True
-    cbar_extend : str, optional
-      Whether to extend the colorbar to mark where min or max tick is less than
-      the min or max of the data. Options are 'min', 'max', 'neither', or 'both'
-    cbar_orientation : {'horizontal', 'vertical'}
+    cbar_orientation : {'vertical', 'horizontal'}
       color bar orientation
     cbar_ticks : list
       custom ticks on the colorbar
@@ -252,24 +266,23 @@ def _set_default_plot_properties(values, plot_properties=None):
       The format of the scale label. Default: '%g'
     cbar_unit : str, optional
       A text describing the unit of the data. Default: ''
-    cbar_show_tickmarkers : bool, optional
-      Preserve tickmarkers for the full bar with labels specified by ticks
-      default: None
     boundaries_level : int, optional
       The level of the boundaries to show. Default: None
     colors: dict, optional
       Override default colors
-    fontname : str, optional
-      Set the fontname of the text
     fontsize:  dict, optional
       Override default fontsize of labels
 """
     if plot_properties is None:
         plot_properties = {}
 
-    # Coordinate System
-    if plot_properties.get('coords', None) is None:
-        plot_properties['coords'] = 'C'
+    # Map Coordinates
+    if plot_properties.get('mapcoord', None) is not None:
+        raise HealpixException('mapcoord not supported with skyproj')
+    if plot_properties.get('galactic', False):
+        plot_properties['mapcoord'] = 'G'
+    else:
+        plot_properties['mapcoord'] = 'C'
 
     # Projection
     if plot_properties.get('projection', None) is None:
@@ -278,87 +291,47 @@ def _set_default_plot_properties(values, plot_properties=None):
     if plot_properties['projection'] in ['cart', 'equi', 'equirectangular', 'rectangular', 'lacarte', 'platecarree']:
         plot_properties['projection'] = 'cartesian'
 
+    if plot_properties.get('zoom', None) is None:
+        plot_properties['zoom'] = False
+
     if plot_properties.get('rotation', None) is None:
         plot_properties['rotation'] = 0.0
 
     if plot_properties.get('flip', None) is None:
-        plot_properties['flip'] = False
+        plot_properties['flip'] = True
 
     # Size
     if plot_properties.get('width', None) is None:
         plot_properties['width'] = 10
 
     if plot_properties.get('height', None) is None:
-        plot_properties['height'] = plot_properties['width']*0.63
+        plot_properties['height'] = plot_properties['width']/1.618
+
+    if plot_properties.get('dpi', None) is None:
+        plot_properties['dpi'] = 100
 
     if plot_properties.get('xsize', None) is None:
-        plot_properties['xsize'] = plot_properties['width']*100
+        plot_properties['xsize'] = int(plot_properties['width'] * 0.8 * plot_properties['dpi'])
 
-    # Color Bar
-    if plot_properties.get('cbar_orientation', None) is None:
-        plot_properties['cbar_orientation'] = 'vertical' if plot_properties['projection'] == 'cartesian' else 'horizontal'
+    # Grid
+    if plot_properties.get('grid', None) is None:
+        plot_properties['grid'] = True
 
-    if plot_properties['projection'] in GEOGRAPHIC_PROJECTIONS:
-        if plot_properties['cbar_orientation'] == 'vertical':
-            shrink = 0.6
-            pad = 0.03
-            if plot_properties.get('cbar_ticks', None) is not None:
-                lpad = 0
-            else:
-                lpad = -8
-        else: #if plot_properties['cbar_orientation'] == 'horizontal':
-            shrink = 0.6
-            pad = 0.05
-            if plot_properties.get('cbar_ticks', None) is not None:
-                lpad = 0
-            else:
-                lpad = -8
-    elif plot_properties['projection'] == 'polar':
-        if plot_properties['cbar_orientation'] == 'vertical':
-            shrink = 1
-            pad = 0.01
-            lpad = 0
-        else: #if cbar_orientation == 'horizontal':
-            shrink = 0.4
-            pad = 0.01
-            lpad = 0
-    else: #if projection == 'cart':
-        if plot_properties['cbar_orientation'] == 'vertical':
-            shrink = 0.6
-            pad = 0.03
-            if plot_properties.get('cbar_ticks', None) is not None:
-                lpad = 0
-            else:
-                lpad = -8
-        else: #if cbar_orientation == 'horizontal':
-            shrink = 0.6
-            pad = 0.05
-            if plot_properties.get('cbar_ticks', None) is not None:
-                lpad = 0
-            else:
-                lpad = -8
-            if plot_properties['xlabel'] is None:
-                pad = pad + 0.01
-
-    if plot_properties['cbar_orientation'] == 'vertical' and plot_properties.get('title', None) is not None:
-        lpad += 8
-
-    plot_properties['cbar_shrink'] = shrink
-    plot_properties['cbar_pad'] = pad
-    plot_properties['cbar_label_pad'] = lpad
+    if plot_properties.get('grid_longitude', None) is None:
+        plot_properties['grid_longitude'] = 'degrees'
 
      # Colors
     color_defaults = {
         'background': 'white',
         'badvalue': 'gray',
-        'gridline': (0.9,0.9,0.9) if values is not None else (0.5,0.5,0.5),
-        'grid_xtick_label': 'black',
-        'grid_ytick_label': 'black',
+        'grid': (0.8,0.8,0.8) if values is not None else (0.5,0.5,0.5),
+        'xtick_label': 'black',
+        'ytick_label': 'black',
         'boundaries': 'red'
     }
 
-    if plot_properties['projection'] != 'cartesian':
-        color_defaults['grid_xtick_label'] = color_defaults['gridline']
+    if plot_properties['projection'] in GLOBE_PROJECTIONS:
+        color_defaults['xtick_label'] = color_defaults['grid']
 
     if 'colors' in plot_properties and plot_properties['colors'] is not None:
         plot_properties['colors'] = _update_dictionary(color_defaults,  plot_properties['colors'])
@@ -366,15 +339,12 @@ def _set_default_plot_properties(values, plot_properties=None):
         plot_properties['colors'] = color_defaults
 
    # Fonts
-    if 'fontname' not in plot_properties:
-        plot_properties['fontname'] = None
-
     fontsize_defaults = {
         'xlabel': 12,
         'ylabel': 12,
         'title': 14,
-        'xtick_label': 12,
-        'ytick_label': 12,
+        'xtick_label': 10,
+        'ytick_label': 10,
         'cbar_label': 12,
         'cbar_tick_label': 10,
         'boundaries_label': 12,
@@ -393,10 +363,10 @@ def _set_default_plot_properties(values, plot_properties=None):
 
     if isinstance(cmap, str):
         cmap0 = plt.get_cmap(cmap)
-    elif isinstance(cmap, matplotlib.colors.Colormap):
+    elif isinstance(cmap, mpl.colors.Colormap):
         cmap0 = cmap
     else:
-        cmap0 = plt.get_cmap(matplotlib.rcParams['image.cmap'])
+        cmap0 = plt.get_cmap(mpl.rcParams['image.cmap'])
 
     cmap = copy.copy(cmap0)
     cmap.set_over(plot_properties['colors']['badvalue'])
@@ -432,13 +402,13 @@ def _set_default_plot_properties(values, plot_properties=None):
         if isinstance(norm, str):
             match norm.lower():
                 case 'lin' | 'norm' | 'normalize':
-                    norm = matplotlib.colors.Normalize()
+                    norm = mpl.colors.Normalize()
                 case 'log':
-                    norm = matplotlib.colors.LogNorm()
+                    norm = mpl.colors.LogNorm()
                 case 'symlog':
-                    norm = matplotlib.colors.SymLogNorm(1, linscale=0.1, clip=True, base=10) # pylint: disable=unexpected-keyword-arg
+                    norm = mpl.colors.SymLogNorm(1, linscale=0.1, clip=True, base=10) # pylint: disable=unexpected-keyword-arg
                 case _:
-                    norm = matplotlib.colors.NoNorm()
+                    norm = mpl.colors.NoNorm()
 
         norm.vmin = plot_properties['vmin']
         norm.vmax = plot_properties['vmax']
@@ -448,361 +418,149 @@ def _set_default_plot_properties(values, plot_properties=None):
 
     return plot_properties
 
-def _plot_data(values, level, pixs,
-    coords=None,
-    projection='cartesian',
-    rotation=None,
-    flip=False,
+def _draw_map(values, level, pixs, skycoords,
+    sp=None,
+    mapcoord=None,
+    zoom=False,
     xsize=1000,
-    ysize=None,
     cmap=None,
     norm=None,
     **kwargs # pylint: disable=unused-argument
 ):
-    if values is not None:
-        npix = len(values)
-
-        if level is None:
-            if not is_npix_valid(npix):
-                raise HealpixException('level and pixs required when passing a partial map')
-            level = get_level(npix)
-
-        if pixs is None:
-            if npix == get_npix(level):
-                pixs = None
-            else:
-                raise HealpixException('pixs must be specified when values are not a full HEALpix map')
-        else:
-            if npix != len(pixs):
-                raise HealpixException('values and pixs must be the same size')
-
-    if values is not None and pixs is not None and projection not in GEOGRAPHIC_PROJECTIONS:
-        if rotation != 0.0:
-            raise HealpixException('rotation not supported when pixs specified')
-
-        symmetric = False
-        method = 'closest'
-        match np.array(coords)[0]:
-            case 'C':
-                skycoords = get_pixel_skycoord(level, pixs, frame='icrs')
-                max_longitude = max(skycoords.ra.degree)
-                min_longitude = min(skycoords.ra.degree)
-                max_latitude = max(skycoords.dec.degree)
-                min_latitude = min(skycoords.dec.degree)
-            case 'G':
-                skycoords = get_pixel_skycoord(level, pixs, frame='galactic')
-                max_longitude = max(skycoords.l.degree)
-                min_longitude = min(skycoords.l.degree)
-                max_latitude = max(skycoords.b.degree)
-                min_latitude = min(skycoords.b.degree)
-            case 'E':
-                skycoords = get_pixel_skycoord(level, pixs, frame='ecliptic')
-                max_longitude = max(skycoords.lon.degree)
-                min_longitude = min(skycoords.lon.degree)
-                max_latitude = max(skycoords.lat.degree)
-                min_latitude = min(skycoords.lat.degree)
-    else:
-        symmetric = True
-        if pixs is not None:
-            method = 'closest'
-        else:
-            method = 'interpolate'
-        [min_longitude, max_longitude] = DEFAULT_LONGITUDE_RANGE
-        [min_latitude, max_latitude] = DEFAULT_LATITUDE_RANGE
-
-    range_lon = max_longitude - min_longitude # pylint: disable=possibly-used-before-assignment
-    range_lat = max_latitude - min_latitude # pylint: disable=possibly-used-before-assignment
-    mid_lon = (max_longitude + min_longitude) / 2
-    mid_lat = (max_latitude + min_latitude) / 2
-
-    if not symmetric:
-        range_lon = min(360.0, range_lon * 1.1)
-        range_lat = min(180.0, range_lat * 1.1)
-
-        min_longitude = max(0.0, mid_lon-range_lon/2)
-        max_longitude = min(360.0, mid_lon+range_lon/2)
-        min_latitude = max(-90.0, mid_lat-range_lat/2)
-        max_latitude = min(90.0, mid_lat+range_lat/2)
-
-    if ysize is None:
-        ratio = range_lon * np.cos(np.deg2rad(mid_lat)) / range_lat
-        ysize = int(xsize / ratio)
-
-    longitude = np.linspace(min_longitude, max_longitude, xsize)
-    latitude = np.linspace(min_latitude, max_latitude, ysize)
-
-    if values is not None:
-        if (rotation != 0.0) or (np.size(coords) > 1 and coords[0] != coords[1]):
-            phi = np.deg2rad(longitude)
-            theta = np.deg2rad(90 - latitude)
-            PHI, THETA = np.meshgrid(phi, theta)
-
-            rotator = Rotator(coord=coords, rot=-rotation, inv=True)
-            THETA, PHI = rotator(THETA.flatten(), PHI.flatten())
-            THETA = THETA.reshape(ysize, xsize)
-            PHI = PHI.reshape(ysize, xsize)
-
-            LONGITUDE = np.rad2deg(PHI) % 360.0
-            LATITUDE = 90 - np.rad2deg(THETA)
-        else:
-            LONGITUDE, LATITUDE = np.meshgrid(longitude, latitude)
-
-        rotated_longitude = Longitude(LONGITUDE.flatten(), unit=u.degree)
-        rotated_latitude = Latitude(LATITUDE.flatten(), unit=u.degree)
-
-        match method:
-            case 'interpolate':
-                if len(values) != get_npix(level):
-                    raise HealpixException('not supported')
-                plot_values = healpix.interpolate_bilinear_lonlat(
-                    rotated_longitude,
-                    rotated_latitude,
-                    values,
-                    order='nested'
-                ).reshape(ysize, xsize)
-            case 'closest':
-                grid_pix = healpix.lonlat_to_healpix(
-                    rotated_longitude,
-                    rotated_latitude,
-                    nside=_get_nside(level),
-                    order='nested'
-                ).reshape(ysize, xsize)
-
-                if pixs is None:
-                    plot_values = values[grid_pix]
-                else:
-                    if not np.all(np.diff(pixs) >= 0):
-                        sorted_indices = np.argsort(pixs)
-                        pixs = pixs[sorted_indices]
-                        values = values[sorted_indices]
-                    pixs_indices = np.searchsorted(pixs, grid_pix)
-                    plot_values = np.full(grid_pix.shape, np.nan)
-                    valid_indices = np.isin(grid_pix, pixs)
-                    plot_values[valid_indices] = values[pixs_indices[valid_indices]]
-
-    if flip:
-        if symmetric:
-            longitude *= -1
-        else:
-            longitude = 360.0 - longitude
-
-    if not symmetric or (values is None and projection not in GEOGRAPHIC_PROJECTIONS):
-        ax = plt.gca()
-        ax.set_xlim(np.deg2rad(np.array([min(longitude), max(longitude)])))
-        ax.set_ylim(np.deg2rad(np.array([min(latitude), max(latitude)])))
-
     if values is None:
-        return None
+        return
 
-    return plt.pcolormesh(
-        np.deg2rad(longitude),
-        np.deg2rad(latitude),
-        plot_values,
-        cmap=cmap,
-        norm=norm,
-        rasterized=True,
-        shading='auto'
-    )
+    num_values = len(values)
 
-class DegreesFormatter(Formatter):
-    def __init__(self, round_to=1.0): # pylint: disable=useless-parent-delegation
-        self._round_to = round_to
+    if level is None:
+        if not is_npix_valid(num_values):
+            raise HealpixException('level and pixs required when passing a partial map')
+        level = get_level(num_values)
 
-    def __call__(self, x, pos=None):
-        degrees = np.rad2deg(x)
-        degrees = round(degrees / self._round_to) * self._round_to
+    npix = get_npix(level)
 
-        d = int(degrees)
-        m = int(np.round((degrees - d) * 60, 5))
-        s = int(np.round((degrees - d - m/60.0) * 3600, 2))
-
-        if m == 0 and s == 0:
-            return f"{d:.0f}\N{DEGREE SIGN}"
-
-        if s == 0:
-            return f"{d:.0f}\N{DEGREE SIGN}{m:0>2.0f}\N{PRIME}"
-
-        if s % 1 == 0:
-            sec_format = '0>2.0f'
-        else:
-            sec_format = '0>2.1f'
-
-        return f"{d:.0f}\N{DEGREE SIGN}{m:0>2.0f}\N{PRIME}{s:{sec_format}}\N{DOUBLE PRIME}"
-
-class LongitudeFormatter(DegreesFormatter):
-    def __init__(self, round_to=1.0): # pylint: disable=useless-parent-delegation
-        super().__init__(round_to)
-
-    def __call__(self, x, pos=None): # pylint: disable=useless-parent-delegation
-        x = x % (2*np.pi)
-        return super().__call__(x, pos)
-
-class RotatedLongitudeFormatter(LongitudeFormatter):
-    def __init__(self, round_to=1.0, rotation=0.0, flip=False):
-        super().__init__(round_to)
-        self._rotation = rotation
-        self._flip = flip
-
-    def __call__(self, x, pos=None):
-        x = (x + self._rotation)*(-1 if self._flip else 1)
-        return super().__call__(x, pos)
-
-class SymmetricLongitudeFormatter(DegreesFormatter):
-    def __init__(self, round_to=1.0): # pylint: disable=useless-parent-delegation
-        super().__init__(round_to)
-
-    def __call__(self, x, pos=None):
-        x = (x + np.pi) % (2*np.pi) - np.pi
-        return super().__call__(x, pos)
-
-class RotatedSymmetricLongitudeFormatter(SymmetricLongitudeFormatter):
-    def __init__(self, round_to=1.0, rotation=0.0, flip=False):
-        super().__init__(round_to)
-        self._rotation = rotation
-        self._flip = flip
-
-    def __call__(self, x, pos=None):
-        x = (x + self._rotation)*(-1 if self._flip else 1)
-        return super().__call__(x, pos)
-
-class RightAscensionFormatter(Formatter):
-    def __init__(self, round_to=1.0):
-        self._round_to = round_to/15 # convert round_to from degrees to hours
-
-    def __call__(self, x, pos=None):
-        hours = np.rad2deg(x)/15 + (24 if x < 0 else 0)
-        hours = round(hours / self._round_to) * self._round_to
-
-        h = int(hours)
-        m = int(np.round((hours - h) * 60, 5))
-        s = int(np.round((hours - h - m/60.0) * 3600, 2))
-
-        if m == 0 and s == 0:
-            return f"{h:.0f}\u02B0"
-
-        if s == 0:
-            return f"{h:.0f}\u02B0{m:0>2.0f}\u1D50"
-
-        if s % 1 == 0:
-            sec_format = '0>2.0f'
-        else:
-            sec_format = '0>2.1f'
-
-        return f"{h:.0f}\u02B0{m:0>2.0f}\u1D50{s:{sec_format}}\u02E2"
-
-class RotatedRightAscensionFormatter(RightAscensionFormatter):
-    def __init__(self, round_to=1.0, rotation=0.0, flip=False):
-        super().__init__(round_to)
-        self._rotation = rotation
-        self._flip = flip
-
-    def __call__(self, x, pos=None):
-        x = (x + self._rotation)*(-1 if self._flip else 1)
-        return super().__call__(x, pos)
-
-def _round_angular_tick_spacing(ticks, is_hours=False):
-    tick_spacing = np.diff(ticks)[0]
-    tick_range = np.abs(ticks[0]-ticks[-1])
-
-    if is_hours:
-        tick_spacing = tick_spacing / 15.0
-        tick_range = tick_range / 15.0
-        factor = 15.0
+    if pixs is None:
+        if num_values != npix:
+            raise HealpixException('pixs must be specified when values are not a full HEALpix map')
     else:
-        factor = 1
+        if num_values == npix:
+            pixs = None
+        elif num_values != len(pixs):
+            raise HealpixException('values and pixs must be the same size')
 
-    if tick_spacing > 1:
-        round_to_factor = 1
-        if is_hours:
-            round_to_options = [6,4,3,2,1]
-        else:
-            round_to_options = [90,60,45,30,15,10,5,4,3,2,1]
-    elif tick_spacing*60 > 1:
-        round_to_factor = 60
-        round_to_options = [30,20,15,10,5,1]
+    if pixs is not None:
+        if mapcoord != 'C':
+            raise HealpixException('rotating coordinates is not supported when pixs specified')
+
+        sp.draw_hpxpix(_get_nside(level), pixs, values, nest=True, zoom=zoom, xsize=xsize, cmap=cmap, norm=norm)
     else:
-        round_to_factor = 3600
-        if tick_spacing*3600 > 1:
-            round_to_options = [30,20,15,10,5,1]
-        else:
-            round_to_options = [0.5,0.1]
+        if mapcoord != 'C':
+            rotator = Rotator(coord=['C', mapcoord], inv=True)
+            theta_cel = np.deg2rad(90 - skycoords.dec.degree)
+            phi_cel = np.deg2rad(skycoords.ra.degree)
+            theta, phi = rotator(theta_cel, phi_cel)
+            lon = np.rad2deg(phi) % 360.0
+            lat = 90 - np.rad2deg(theta)
+            remap_pixs = get_healpix_from_skycoord(level, SkyCoord(lon, lat, unit=(u.degree, u.degree)))
+            values = values[remap_pixs]
 
-    round_to_index = np.argmin(np.abs(tick_spacing*round_to_factor - round_to_options))
-    round_to = round_to_options[round_to_index] / round_to_factor
+        sp.draw_hpxmap(values, nest=True, xsize=xsize, cmap=cmap, norm=norm)
 
-    if tick_range/round_to > 5 and round_to_index > 0:
-        round_to_index = round_to_index-1
-        round_to = round_to_options[round_to_index] / round_to_factor
-
-    if tick_range/round_to < 2 and round_to_index < len(round_to_options)-1:
-        round_to_index = round_to_index+1
-        round_to = round_to_options[round_to_index] / round_to_factor
-
-    return factor * round_to
-
-def _plot_grid(
-        projection='cartesian',
-        rotation=0.0,
-        flip=False,
+def _draw_grid(
+        sp=None,
+        ax=None,
+        zoom=False,
         grid=True,
-        grid_labels=True,
-        grid_longitude_spacing=None,
-        grid_latitude_spacing=None,
-        grid_longitude_type=None,
+        grid_longitude=None,
         colors=None,
-        fontname=None,
-        fontsize=None,
         **kwargs # pylint: disable=unused-argument
 ):
-    ax = plt.gca()
-
-    if grid:
-        plt.grid(True, color=colors['gridline'])
-        ax.set_axisbelow(False) # Fix to force grid lines to be on top of the image
-
-        if grid_longitude_spacing is None:
-            grid_longitude_spacing = _round_angular_tick_spacing(np.rad2deg(ax.get_xticks()), is_hours=grid_longitude_type=='hours')
-
-        if grid_latitude_spacing is None:
-            grid_latitude_spacing = _round_angular_tick_spacing(np.rad2deg(ax.get_yticks()))
-
-        if projection in GEOGRAPHIC_PROJECTIONS:
-            ax.set_longitude_grid(grid_longitude_spacing)
-            ax.set_latitude_grid(grid_latitude_spacing)
-            ax.set_longitude_grid_ends(90)
-        else:
-            ax.xaxis.set_major_locator(MultipleLocator(np.deg2rad(grid_longitude_spacing)))
-            ax.yaxis.set_major_locator(MultipleLocator(np.deg2rad(grid_latitude_spacing)))
-
-    if grid and grid_labels:
-        match grid_longitude_type:
-            case 'hours':
-                ax.xaxis.set_major_formatter(RotatedRightAscensionFormatter(grid_longitude_spacing, rotation=np.deg2rad(rotation), flip=flip))
-            case 'degrees':
-                ax.xaxis.set_major_formatter(RotatedLongitudeFormatter(grid_longitude_spacing, rotation=np.deg2rad(rotation), flip=flip))
-            case _:
-                ax.xaxis.set_major_formatter(RotatedSymmetricLongitudeFormatter(grid_longitude_spacing, rotation=np.deg2rad(rotation), flip=flip))
-
-        ax.yaxis.set_major_formatter(DegreesFormatter(grid_latitude_spacing))
-
-        ax.tick_params(axis='x', labelfontfamily=fontname, labelsize=fontsize['xtick_label'], colors=colors['grid_xtick_label'])
-        ax.tick_params(axis='y', labelfontfamily=fontname, labelsize=fontsize['ytick_label'], colors=colors['grid_ytick_label'])
+    if not hasattr(ax, 'gridlines'): # version 1.x
+        is_old_version = True
+        aa = sp._aa # pylint: disable=protected-access
+        gridlines = aa.gridlines
     else:
-        ax.xaxis.set_ticklabels([])
-        ax.yaxis.set_ticklabels([])
-        ax.tick_params(axis='both', which='both', length=0)
+        is_old_version = False
+        gridlines = ax.gridlines
 
-def _convert_to_180_range(angles):
-    return (angles + 180.0) % 360.0 - 180.0
+    if not grid:
+        if is_old_version:
+            aa.axis['left'].major_ticklabels.set_visible(False)
+            aa.axis['right'].major_ticklabels.set_visible(False)
+            aa.axis['bottom'].major_ticklabels.set_visible(False)
+            aa.axis['top'].major_ticklabels.set_visible(False)
 
-def _plot_boundaries(
-        coords='C',
+            if sp._boundary_labels: # pylint: disable=protected-access
+                for label in sp._boundary_labels: # pylint: disable=protected-access
+                    label.remove()
+                sp._boundary_labels = [] # pylint: disable=protected-access
+
+        return
+
+    gridlines.set_edgecolor(colors['grid'])
+
+    # The following is a HACK to add support for:
+    # 1. Longitude in Hours instead of Degrees
+    # 2. Tick labels with minutes and seconds as needed
+
+    grid_helper = gridlines._grid_helper # pylint: disable=protected-access
+
+    if is_old_version:
+        n_grid_lon, n_grid_lat = sp._compute_n_grid_from_extent( # pylint: disable=protected-access
+            ax.get_extent(lonlat=True)
+        )
+    else:
+        n_grid_lon, n_grid_lat = grid_helper._compute_n_grid_from_extent( # pylint: disable=protected-access
+            ax.get_extent(),
+            n_grid_lon_default=6,
+            n_grid_lat_default=6,
+        )
+
+    match grid_longitude:
+        case 'hours':
+            lon_formatter = RightAscensionFormatter()
+            lon_locator = angle_helper.LocatorHMS(n_grid_lon, include_last=zoom)
+        case 'degrees':
+            lon_formatter = LongitudeFormatter()
+            lon_locator = angle_helper.LocatorDMS(n_grid_lon, include_last=zoom)
+        case _:
+            lon_formatter = SymmetricLongitudeFormatter()
+            lon_locator = angle_helper.LocatorDMS(n_grid_lon, include_last=zoom)
+
+    lat_formatter = DegreesFormatter()
+    lat_locator = angle_helper.LocatorDMS(n_grid_lat, include_last=True)
+
+    if is_old_version:
+        sp._tick_formatter1 = lon_formatter # pylint: disable=protected-access
+        sp._tick_formatter2 = lat_formatter # pylint: disable=protected-access
+        grid_helper.update_grid_finder(
+            grid_locator1 = lon_locator,
+            grid_locator2 = lat_locator,
+            tick_formatter1 = lon_formatter,
+            tick_formatter2 = lat_formatter
+        )
+    else:
+        grid_helper._grid_locator_lon = lon_locator # pylint: disable=protected-access
+        grid_helper._tick_formatters['lon'] = lon_formatter # pylint: disable=protected-access
+        grid_helper._grid_locator_lat = lat_locator # pylint: disable=protected-access
+        grid_helper._tick_formatters['lat'] = lat_formatter # pylint: disable=protected-access
+
+    x1, x2 = ax.get_xlim()
+    y1, y2 = ax.get_ylim()
+    grid_helper._update_grid(x1, y1, x2, y2) # pylint: disable=protected-access
+
+    if is_old_version:
+        sp._draw_aa_bounds_and_labels() # pylint: disable=protected-access
+
+def _draw_boundaries(
+        ax=None,
+        sp=None,
+        mapcoord='C',
+        zoom=False,
         rotation=0.0,
-        flip=False,
         boundaries_level=None,
         boundaries_pixs=None,
         colors=None,
-        fontname=None,
         fontsize=None,
         **kwargs # pylint: disable=unused-argument
 ):
@@ -812,60 +570,34 @@ def _plot_boundaries(
     if boundaries_pixs is not None and not isinstance(boundaries_pixs, list) and not isinstance(boundaries_pixs, np.ndarray):
         boundaries_pixs = [boundaries_pixs]
 
-    ax = plt.gca()
     xlim = np.sort(np.rad2deg(ax.get_xlim()))
     ylim = np.sort(np.rad2deg(ax.get_ylim()))
-    xrange = np.abs(xlim[0]-xlim[1])
-    yrange = np.abs(ylim[0]-ylim[1])
-    full_range = xrange >= 360.0 and yrange >= 180.0
-    symmetric = full_range
 
     step = max(1,2**(7-boundaries_level)) # level 0 = 128, level 1 = 64, level 2 = 32, ...
     pixs = np.arange(get_npix(boundaries_level))
     skycoords = get_pixel_skycoord(boundaries_level, pixs)
     boundaries = get_boundaries_skycoord(boundaries_level, pixs=pixs, step=step)
+    boundaries_label_fontsize = fontsize['boundaries_label_small'] if not zoom else fontsize['boundaries_label']
 
-    if coords == 'G' or coords[1] == 'G':
-        boundaries_lon = boundaries.galactic.l.to(u.degree).value + rotation
+    if mapcoord == 'G':
+        boundaries_lon = boundaries.galactic.l.to(u.degree).value
         boundaries_lat = boundaries.galactic.b.to(u.degree).value
-        center_lon = skycoords.galactic.l.to(u.degree).value + rotation
+        center_lon = skycoords.galactic.l.to(u.degree).value
         center_lat = skycoords.galactic.b.to(u.degree).value
-    elif coords == 'E' or coords[1] == 'E':
-        boundaries_lon = boundaries.ecliptic.lon.to(u.degree).value + rotation
-        boundaries_lat = boundaries.ecliptic.lat.to(u.degree).value
-        center_lon = skycoords.ecliptic.lon.to(u.degree).value + rotation
-        center_lat = skycoords.ecliptic.lat.to(u.degree).value
     else:
-        boundaries_lon = boundaries.ra.to(u.degree).value + rotation
+        boundaries_lon = boundaries.ra.to(u.degree).value
         boundaries_lat = boundaries.dec.to(u.degree).value
-        center_lon = skycoords.ra.to(u.degree).value + rotation
+        center_lon = skycoords.ra.to(u.degree).value
         center_lat = skycoords.dec.to(u.degree).value
 
-    if symmetric:
-        boundaries_lon = _convert_to_180_range(boundaries_lon)
-        center_lon = _convert_to_180_range(center_lon)
-    else:
-        boundaries_lon = boundaries_lon % 360.0
-        center_lon = center_lon % 360.0
+    xlim += rotation
 
-    count = 0
     max_count = 250
-
+    count = 0
     for i, pix in enumerate(pixs):
         vertices = np.vstack([boundaries_lon[i], boundaries_lat[i]]).transpose()
 
-        if symmetric and min(vertices[:,0]) == -180 and max(vertices[:,0]) > 0: # fix unnecessary wrap around
-            vertices[vertices[:,0] == -180,0] = 180
-
-        if flip:
-            if symmetric:
-                vertices[:,0] *= -1
-                center_lon[i] *= -1
-            else:
-                vertices[:,0] = 360.0 - vertices[:,0]
-                center_lon[i] = 360.0 - center_lon[i]
-
-        if not full_range and not np.any((vertices[:, 0] >= xlim[0]) & (vertices[:, 0] <= xlim[1]) & (vertices[:, 1] >= ylim[0]) & (vertices[:, 1] <= ylim[1])):
+        if zoom and not np.any((vertices[:, 0] >= xlim[0]) & (vertices[:, 0] <= xlim[1]) & (vertices[:, 1] >= ylim[0]) & (vertices[:, 1] <= ylim[1])):
             continue
 
         count += 1
@@ -873,30 +605,27 @@ def _plot_boundaries(
             plt.clf()
             raise HealpixException('Too many boundaries to plot')
 
-        if max(vertices[:,0]) - min(vertices[:,0]) < 0.95*xrange: # only draw boundaries that do not wrap around
-            ax.add_patch(Polygon(np.deg2rad(vertices), closed=True, edgecolor=colors['boundaries'], facecolor='none', lw=0.5, zorder=10))
+        sp.draw_polygon(lon=vertices[:,0], lat=vertices[:,1], edgecolor=colors['boundaries'])
 
-        if full_range or np.all((center_lon[i] >= xlim[0]) & (center_lon[i] <= xlim[1]) & (center_lat[i] >= ylim[0]) & (center_lat[i] <= ylim[1])):
-            if boundaries_pixs is None or pix in boundaries_pixs:
-                boundaries_label_fontsize = fontsize['boundaries_label_small'] if full_range else fontsize['boundaries_label']
-                ax.text(np.deg2rad(center_lon[i]), np.deg2rad(center_lat[i]), f"{pix}", color=colors['boundaries'], fontsize=boundaries_label_fontsize, fontname=fontname, ha='center', va='center')
+        if boundaries_pixs is not None and pix not in boundaries_pixs:
+            continue
 
-def _plot_cbar(data_plot, values,
+        if zoom and ((center_lon[i] < xlim[0]) or (center_lon[i] > xlim[1]) or (center_lat[i] < ylim[0]) or (center_lat[i] > ylim[1])):
+            continue
+
+        ax.text(center_lon[i], center_lat[i], f"{pix}", color=colors['boundaries'], fontsize=boundaries_label_fontsize, ha='center', va='center')
+
+def _draw_cbar(
+        sp=None,
         vmin=None,
         vmax=None,
         cbar=True,
-        cbar_orientation='horizontal',
-        cbar_tick_direction='out',
+        cbar_orientation='vertical',
         cbar_ticks=None,
-        cbar_extend=None,
         cbar_format='%g',
-        cbar_label_pad=0.0,
-        cbar_pad=0.0,
-        cbar_show_tickmarkers=False,
-        cbar_shrink=1.0,
+        cbar_pad=0.03,
+        cbar_shrink=0.6,
         cbar_unit='',
-        cbar_vertical_tick_rotation=90,
-        fontname=None,
         fontsize=None,
         **kwargs # pylint: disable=unused-argument
     ):
@@ -904,110 +633,158 @@ def _plot_cbar(data_plot, values,
     if not cbar or vmin is None or vmax is None:
         return
 
-    fig = plt.gcf()
-
-    if cbar_ticks is None:
-        cbar_ticks = [vmin, vmax]
-
-    if cbar_extend is None:
-        cbar_extend = 'neither'
-        if vmin > np.min(values):
-            cbar_extend = 'min'
-        if vmax < np.max(values):
-            cbar_extend = 'max'
-        if vmin > np.min(values) and vmax < np.max(values):
-            cbar_extend = 'both'
-
-    cb = fig.colorbar(
-        data_plot,
-        orientation=cbar_orientation,
+    cb = sp.draw_colorbar(
+        ticks=cbar_ticks,
+        format=cbar_format,
+        fontsize=fontsize['cbar_tick_label'],
+        location='bottom' if cbar_orientation == 'horizontal' else 'right',
         shrink=cbar_shrink,
-        pad=cbar_pad,
-        ticks=(None if cbar_show_tickmarkers else cbar_ticks),
-        extend=cbar_extend,
+        pad=cbar_pad
     )
 
-    # Hide all tickslabels not in tick variable. Do not delete tick-markers
-    if cbar_show_tickmarkers:
-        ticks = list(set(cb.get_ticks()) | set(cbar_ticks))
-        ticks = np.sort(ticks)
-        ticks = ticks[ticks >= vmin]
-        ticks = ticks[ticks <= vmax]
-        labels = [cbar_format % tick if tick in cbar_ticks else '' for tick in ticks]
-
-        try:
-            cb.set_ticks(ticks, labels)
-        except TypeError:
-            cb.set_ticks(ticks)
-            cb.set_ticklabels(labels)
-    else:
-        labels = [cbar_format % tick for tick in cbar_ticks]
-
-    if cbar_orientation == 'horizontal':
-        cb.ax.set_xticklabels(labels, fontname=fontname)
-
-        cb.ax.xaxis.set_label_text(
-            cbar_unit, fontsize=fontsize['cbar_label'], fontname=fontname
-        )
-        cb.ax.tick_params(
-            axis='x',
-            labelsize=fontsize['cbar_tick_label'],
-            direction=cbar_tick_direction
-        )
-        cb.ax.xaxis.labelpad = cbar_label_pad
-    if cbar_orientation == 'vertical':
-        cb.ax.set_yticklabels(
-            labels,
-            rotation=cbar_vertical_tick_rotation,
-            va='center',
-            fontname=fontname
-        )
-
-        cb.ax.yaxis.set_label_text(
-            cbar_unit,
-            fontsize=fontsize['cbar_label'],
-            rotation=90,
-            fontname=fontname
-        )
-        cb.ax.tick_params(
-            axis='y',
-            labelsize=fontsize['cbar_tick_label'],
-            direction=cbar_tick_direction
-        )
-        cb.ax.yaxis.labelpad = cbar_label_pad
-
-    # workaround for issue with viewers, see colorbar docstring
-    cb.solids.set_edgecolor('face')
+    cb.set_label(label=cbar_unit, fontsize=fontsize['cbar_label'])
 
 def _finish_plot(
-    grid=False,
-    grid_labels=False,
+    ax=None,
+    projection='cartesian',
     title=None,
     xlabel=None,
     ylabel=None,
-    fontname=None,
     fontsize=None,
     **kwargs # pylint: disable=unused-argument
 ):
-    left = 0.02
-    right = 0.98
-    top = 0.95
-    bottom = 0.05
-
-    if grid and grid_labels:
-        left += 0.02
-
-    plt.subplots_adjust(left=left, right=right, top=top, bottom=bottom)
-
-    ax = plt.gca()
-
     if title is not None:
-        ax.set_title(title, fontsize=fontsize['title'], fontname=fontname)
+        title_pad = 25 if projection not in GLOBE_PROJECTIONS else 10
+        ax.set_title(title, pad=title_pad, fontsize=fontsize['title'])
 
     if xlabel is not None:
-        ax.set_xlabel(xlabel, fontsize=fontsize['xlabel'], fontname=fontname)
+        ax.set_xlabel(xlabel, fontsize=fontsize['xlabel'])
 
     if ylabel is not None:
-        ax.set_ylabel(ylabel, fontsize=fontsize['ylabel'], fontname=fontname)
+        ax.set_ylabel(ylabel, fontsize=fontsize['ylabel'])
+
+#endregion
+
+#region Tick Formatters
+
+def _get_values(*args):
+    if len(args) == 3:
+        (_, factor, values) = args
+    else:
+        factor = 1.0
+        values = args[0]
+
+    if not isinstance(values, np.ndarray):
+        if isinstance(values, list):
+            values = np.array(values)
+        else:
+            values = np.array([values])
+
+    return values / factor
+
+class DegreesFormatter(Formatter):
+    def __init__(self, round_to=None, radians=False): # pylint: disable=useless-parent-delegation
+        self._round_to = round_to
+        self._radians = radians
+
+    def __call__(self, *args):
+        values = _get_values(*args)
+
+        if len(values) == 0:
+            return []
+
+        if self._radians:
+            values = np.rad2deg(values)
+
+        if self._round_to is not None:
+            values = np.round(values / self._round_to) * self._round_to
+
+        d = np.trunc(values).astype(int)
+        m = np.floor(np.round((values - d) * 60, 5)).astype(int)
+        s = np.round((values - d - m/60.0) * 3600, 2)
+
+        labels = []
+        for i in range(len(values)):
+            if m[i] == 0 and s[i] == 0:
+                labels.append(f"{d[i]:.0f}\N{DEGREE SIGN}")
+            elif s[i] == 0:
+                labels.append(f"{d[i]:.0f}\N{DEGREE SIGN}{m[i]:0>2.0f}\N{PRIME}")
+            else:
+                if s[i] % 1 == 0:
+                    sec_format = '0>2.0f'
+                else:
+                    sec_format = '0>2.1f'
+
+                labels.append(f"{d[i]:.0f}\N{DEGREE SIGN}{m[i]:0>2.0f}\N{PRIME}{s[i]:{sec_format}}\N{DOUBLE PRIME}")
+
+        return labels
+
+class LongitudeFormatter(DegreesFormatter):
+    def __init__(self, round_to=None, radians=False): # pylint: disable=useless-parent-delegation
+        super().__init__(round_to, radians)
+
+    def __call__(self, *args): # pylint: disable=useless-parent-delegation
+        values = _get_values(*args)
+        if len(values) == 0:
+            return []
+        if self._radians:
+            values = values % (2*np.pi)
+        else:
+            values = values % 360
+        return super().__call__(values)
+
+class SymmetricLongitudeFormatter(DegreesFormatter):
+    def __init__(self, round_to=None, radians=False): # pylint: disable=useless-parent-delegation
+        super().__init__(round_to, radians)
+
+    def __call__(self, *args):
+        values = _get_values(*args)
+        if len(values) == 0:
+            return []
+        if self._radians:
+            values = (values + np.pi) % (2*np.pi) - np.pi
+        else:
+            values = (values + 180) % (360) - 180
+        return super().__call__(values)
+
+class RightAscensionFormatter(Formatter):
+    def __init__(self, round_to=None, radians=False):
+        self._round_to = round_to/15 if round_to is not None else None # convert round_to from degrees to hours
+        self._radians = radians
+
+    def __call__(self, *args):
+        values = _get_values(*args)
+
+        if len(values) == 0:
+            return []
+
+        if self._radians:
+            values = np.rad2deg(values)
+
+        values = values/15
+        values[values<0] += 24
+
+        if self._round_to is not None:
+            values = np.round(values / self._round_to) * self._round_to
+
+        h = np.trunc(values).astype(int)
+        m = np.floor(np.round((values - h) * 60, 5)).astype(int)
+        s = np.round((values - h - m/60.0) * 3600, 2)
+
+        labels = []
+        for i in range(len(values)):
+            if m[i] == 0 and s[i] == 0:
+                labels.append(f"{h[i]:.0f}\u02B0")
+            elif s[i] == 0:
+                labels.append(f"{h[i]:.0f}\u02B0{m[i]:0>2.0f}\u1D50")
+            else:
+                if s[i] % 1 == 0:
+                    sec_format = '0>2.0f'
+                else:
+                    sec_format = '0>2.1f'
+
+                labels.append(f"{h[i]:.0f}\u02B0{m[i]:0>2.0f}\u1D50{s[i]:{sec_format}}\u02E2")
+
+        return labels
 
 #endregion
