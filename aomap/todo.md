@@ -34,7 +34,9 @@ Phase 2:
 1. Reduce number of overlapping asterisms
 1. Count remaining asterisms within an FOV of each inner pix
 1. Make map of average asterism counts per inner pix
-1. Find individual asterism in areas with otherwise low AO friendliness
+1. Compute percent area covered by inner pix with at least one asterism
+1. AO friendliness based on asterism coverage instead of stellar density
+1. Search for individual asterisms in areas of low overall AO friendliness
 
 Phase 3:
 1. Install Tip Top and configure for reference AO system

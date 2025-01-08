@@ -473,7 +473,7 @@ def _draw_map(values, level, pixs, skycoords,
             remap_pixs = get_healpix_from_skycoord(level, SkyCoord(lon, lat, unit=(u.degree, u.degree)))
             values = values[remap_pixs]
 
-        sp.draw_hpxmap(values, nest=True, xsize=xsize, cmap=cmap, norm=norm)
+        sp.draw_hpxmap(values, nest=True, zoom=False, xsize=xsize, cmap=cmap, norm=norm)
 
 def _draw_grid(
         sp=None,
