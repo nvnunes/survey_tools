@@ -199,13 +199,17 @@ def get_low_res_background(background_data, wavelength_range, spectral_resolving
         ]
     )
 
-def get_background(background_data, wavelength, wavelength_range, spectral_resolving_power):
-    background_low_res = get_low_res_background(background_data, wavelength_range, spectral_resolving_power)
-
-    if wavelength <= wavelength_range[0] or wavelength >= wavelength_range[1]:
-        return 0.0
-
-    return np.interp(wavelength, background_low_res['wavelength'], background_low_res['emission'])
+def get_background(background_data, wavelengths, wavelength_range, spectral_resolving_power):
+    if np.size(wavelengths) == 1:
+        background_low_res = get_low_res_background(background_data, wavelength_range, spectral_resolving_power)
+        if wavelengths <= wavelength_range[0] or wavelengths >= wavelength_range[1]:
+            return 0.0
+        return np.interp(wavelengths, background_low_res['wavelength'], background_low_res['emission'])
+    else:
+        backgrounds = np.full(wavelengths.shape, np.nan)
+        for i in np.arange(len(wavelengths)):
+            backgrounds[i] = get_background(background_data, wavelengths[i], [wavelength_range[0][i], wavelength_range[1][i]], spectral_resolving_power)
+        return backgrounds
 
 def find_sky_lines(background_data, min_photo_rate = 10.0):
     peaks, _ = find_peaks(background_data['emission'], height=min_photo_rate)
