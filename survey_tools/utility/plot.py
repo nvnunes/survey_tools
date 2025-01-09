@@ -60,7 +60,7 @@ def get_plot_colours(plot_mode, use_accessible_colours = True):
 
     return plot_colours
 
-def create_plot(plot_mode, title = None, projection = None):
+def create_plot(plot_mode='notebook', title = None, projection = None):
     if plot_mode == 'latex':
         if projection is not None:
             fig, ax = plt.subplots(subplot_kw=dict(projection=projection))
