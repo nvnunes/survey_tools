@@ -8,10 +8,11 @@ import os
 from contextlib import redirect_stderr, redirect_stdout
 import numpy as np
 import astropy.units as u
-from astroquery.gaia import Gaia
+import astroquery
+import requests
 from survey_tools import healpix
 
-def GaiaException(Exception):
+class GaiaException(Exception):
     pass
 
 def _get_bounding_box(min_ra, max_ra, min_dec, max_dec):
@@ -68,12 +69,17 @@ SELECT COUNT(*)
    AND in_galaxy_candidates = '0'
     """
 
-    if verbose:
-        job = Gaia.launch_job_async(query, verbose=True)
-    else:
-        with open(os.devnull, 'w') as fnull: # pylint: disable=unspecified-encoding
-            with redirect_stdout(fnull), redirect_stderr(fnull):
-                job = Gaia.launch_job_async(query)
+    try:
+        if verbose:
+            job = astroquery.gaia.GaiaClass(verbose=True).launch_job_async(query, verbose=True)
+        else:
+            with open(os.devnull, 'w') as fnull: # pylint: disable=unspecified-encoding
+                with redirect_stdout(fnull), redirect_stderr(fnull):
+                    job = astroquery.gaia.GaiaClass().launch_job_async(query)
+    except requests.exceptions.HTTPError as e: # pylint: disable=no-member
+        if str(e) == 'OK':
+            raise GaiaException('Archive is likely down for maintenance') from e
+        raise e
 
     results = job.get_results()
 
@@ -102,12 +108,17 @@ SELECT SOURCE_ID AS gaia_id
  ORDER BY SOURCE_ID
     """
 
-    if verbose:
-        job = Gaia.launch_job_async(query, verbose=True)
-    else:
-        with open(os.devnull, 'w') as fnull: # pylint: disable=unspecified-encoding
-            with redirect_stdout(fnull), redirect_stderr(fnull):
-                job = Gaia.launch_job_async(query)
+    try:
+        if verbose:
+            job = astroquery.gaia.GaiaClass(verbose=True).launch_job_async(query, verbose=True)
+        else:
+            with open(os.devnull, 'w') as fnull: # pylint: disable=unspecified-encoding
+                with redirect_stdout(fnull), redirect_stderr(fnull):
+                    job = astroquery.gaia.GaiaClass().launch_job_async(query)
+    except requests.exceptions.HTTPError as e: # pylint: disable=no-member
+        if str(e) == 'OK':
+            raise GaiaException('Archive is likely down for maintenance') from e
+        raise e
 
     results = job.get_results()
 
