@@ -12,7 +12,7 @@ from astropy.constants import si as constants
 from astropy.convolution import convolve, Gaussian1DKernel
 from astropy.io import ascii
 from astropy.table import Table
-from scipy.signal import find_peaks, peak_widths
+from scipy.signal import find_peaks, peak_widths # pylint: disable=no-name-in-module
 
 class StructType:
     pass
@@ -258,14 +258,19 @@ def reject_emission_line(background_data, transmission_data, wavelength, velocit
         else:
             current_wavelength = wavelength[i]
 
+        if np.size(velocity_dispersion) == 1:
+            current_velocity_dispersion = velocity_dispersion
+        else:
+            current_velocity_dispersion = velocity_dispersion[i]
+
         reject = False
 
         if current_wavelength == 0:
             reject = True
         else:
-            dwavelength = np.sqrt(np.power(current_wavelength/spectral_resolving_power,2) + np.power(current_wavelength * velocity_dispersion/constants.c.to('km/s').value,2))
+            dwavelength = np.sqrt(np.power(current_wavelength/spectral_resolving_power,2) + np.power(current_wavelength * current_velocity_dispersion/constants.c.to('km/s').value,2))
             wavelength_range = current_wavelength + 10*dwavelength*np.array([-0.5, 0.5])
-            trans = get_mean_transmission(transmission_data, current_wavelength, velocity_dispersion, spectral_resolving_power, trans_dLambda_multiple)
+            trans = get_mean_transmission(transmission_data, current_wavelength, current_velocity_dispersion, spectral_resolving_power, trans_dLambda_multiple)
 
             if trans < trans_minimum:
                 reject = True
