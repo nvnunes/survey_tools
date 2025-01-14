@@ -18,9 +18,9 @@ Ensure you have the following software installed:
    git clone https://github.com/nvnunes/survey_tools.git
    cd survey_tools
    ```
-2. Install the required dependencies:
+2. Install survey_tools locally as an editable package:
    ```bash
-   pip3 install -r requirements.txt
+   pip3 install -e path/to/survey_tools
    ```
 3. Optionally, download data files (see `data/README.txt`)
 
