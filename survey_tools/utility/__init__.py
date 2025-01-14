@@ -1,5 +1,1 @@
-__all__ = ['fit', 'plot', 'table']
-
-from . import fit
-from . import plot
-from . import table
+__all__ = ['fit', 'plot', 'rotator', 'table']
