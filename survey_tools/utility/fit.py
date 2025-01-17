@@ -724,7 +724,13 @@ def eval_power_law_with_uncertainty(details, x, sigma_x = None):
 def is_outlier(a, num_sigma = 3, method = 'sigma_clip'):
     match method:
         case 'sigma_clip':
-            return sigma_clip(a, sigma = num_sigma, maxiters = None).mask
+            not_nan_filter = ~np.isnan(a)
+            if np.any(not_nan_filter):
+                outliers = np.ones(a.shape, dtype=np.bool_)
+                outliers[not_nan_filter] = sigma_clip(a[not_nan_filter], sigma = num_sigma, maxiters = None).mask
+                return outliers
+            else:
+                return sigma_clip(a, sigma = num_sigma, maxiters = None).mask
 
         case 'smad':
             if len(a) > 0:
