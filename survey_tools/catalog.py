@@ -6,9 +6,11 @@
 
 from copy import deepcopy
 from datetime import datetime
+import glob
 import os
 import pathlib
 import pickle
+import re
 from compress_pickle import dump, load
 import numpy as np
 from astropy.coordinates import Angle, SkyCoord
@@ -21,8 +23,8 @@ from astropy.wcs import WCS
 from dust_extinction.parameter_averages import F99
 from regions import RectangleSkyRegion
 from scipy.special import gamma, gammainc # pylint: disable=no-name-in-module
-from survey_tools import sky
-from survey_tools.utility import table
+from survey_tools import healpix, sky
+from survey_tools.utility import files, table
 
 class StructType:
     pass
@@ -2392,6 +2394,360 @@ def flatten_galaxy_data(catalog_data):
     )
 
     return galaxy_data
+
+#endregion
+
+#region Source Info
+
+def get_source_info(catalog_name, catalog_id, reload=False, skip_cache=False):
+    if np.size(catalog_name) > 1 or np.size(catalog_id) > 1:
+        raise CatalogException('Only one source currently supported')
+
+    if not skip_cache:
+        data_path = f"{os.path.dirname(__file__)}/../data"
+        cache_file = f"{data_path}/cache/targets/source-{catalog_name}-{catalog_id}.pkl"
+
+        if not reload and os.path.exists(cache_file):
+            with open(cache_file, 'rb') as f:
+                return load(f)
+
+    catalog_params = get_params(catalog_name)
+    with CatalogData(catalog_params) as catalog_data:
+        ids = _get_catalog_ids(catalog_data, catalog_id)
+        zs = _get_catalog_redshifts(catalog_data, catalog_id)
+        spps = _get_catalog_spp(catalog_data, catalog_id)
+        lines = _get_catalog_lines(catalog_data, catalog_id)
+
+    retvals = (ids, zs, spps, lines)
+
+    if not skip_cache:
+        os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+        with open(cache_file, 'wb') as f:
+            dump(retvals, f, pickler_kwargs={"protocol": pickle.HIGHEST_PROTOCOL})
+
+    return retvals
+
+def _get_catalog_ids(catalog_data, catalog_id):
+    catalogs = [catalog_data.source]
+    ids = [catalog_id]
+
+    if table.has_field(catalog_data, 'idmap'):
+        idmap = catalog_data.idmap[catalog_data.get_index(catalog_id)] # pylint: disable=no-member
+        for colname in idmap.colnames:
+            if colname in catalog_data.all_sources and idmap[colname] >= 0:
+                catalogs.append(colname)
+                ids.append(idmap[colname]) # pylint: disable=no-member
+
+    return Table([catalogs, ids], names=['catalog', 'id'])
+
+def _get_catalog_redshifts(catalog_data, catalog_id):
+    catalogs = []
+    zs = []
+    # TODO: add support for z_unc
+
+    if table.has_field(catalog_data, 'redshift'):
+        redshift = catalog_data.redshift[catalog_data.get_index(catalog_id)] # pylint: disable=no-member
+        for colname in redshift.colnames:
+            if 'z_' in colname and redshift[colname] > 0:
+                source = colname.replace('z_', '')
+                if source in catalog_data.all_sources:
+                    catalogs.append(source)
+                    zs.append(redshift[colname]) # pylint: disable=no-member
+
+    return Table([catalogs, zs], names=['catalog', 'z'])
+
+def _get_catalog_spp(catalog_data, catalog_id):
+    if not table.has_field(catalog_data, 'spp'):
+        return None
+
+    catalog_names = np.asarray(get_spp_sources())
+    spp_names = get_spp_names()
+    spp_values = np.full((len(catalog_names), len(spp_names)), np.nan)
+
+    for spp_name in spp_names:
+        spp = catalog_data.spp[catalog_data.get_index(catalog_id)] # pylint: disable=no-member
+        for i, spp_name in enumerate(spp_names):
+            for colname in spp.colnames:
+                if colname == spp_name:
+                    if spp[colname] != -99:
+                        source_idx = np.where(catalog_names == catalog_data.source)[0][0]
+                        spp_values[source_idx,i] = spp[colname]
+                elif f"{spp_name}_" in colname:
+                    if spp[colname] != -99:
+                        source_idx = np.where(catalog_names == colname.replace(f"{spp_name}_", ''))[0][0]
+                        spp_values[source_idx,i] = spp[colname]
+
+    nan_rows = np.all(np.isnan(spp_values), axis=1)
+
+    if np.all(nan_rows):
+        return None
+
+    catalog_names = catalog_names[~nan_rows]
+    spp_values = spp_values[~nan_rows]
+
+    return Table(
+        [catalog_names] + [spp_values[:,i] for i in range(np.size(spp_values,1))],
+        names=['catalog'] + spp_names.tolist()
+    )
+
+def _get_catalog_lines(catalog_data, catalog_id):
+    if not table.has_field(catalog_data, 'lines'):
+        return None
+
+    catalog_names = np.asarray(get_line_sources())
+    line_names = get_line_names()
+    line_fluxes = np.full((len(catalog_names), len(line_names)), np.nan)
+
+    for line_name in line_names:
+        lines = catalog_data.lines[catalog_data.get_index(catalog_id)] # pylint: disable=no-member
+        for i, line_name in enumerate(line_names):
+            for colname in lines.colnames:
+                if f"f_{line_name}" in colname:
+                    if lines[colname] > 0.0:
+                        source_idx = np.where(catalog_names == colname.replace(f"f_{line_name}_", ''))[0][0]
+                        line_fluxes[source_idx,i] = lines[colname] * 1e-17 # erg/s/cm^2
+
+    nan_rows = np.all(np.isnan(line_fluxes), axis=1)
+
+    if np.all(nan_rows):
+        return None
+
+    catalog_names = catalog_names[~nan_rows]
+    line_fluxes = line_fluxes[~nan_rows]
+
+    return Table(
+        [catalog_names] + [line_fluxes[:,i] for i in range(np.size(line_fluxes,1))],
+        names=['catalog'] + line_names.tolist()
+    )
+
+#endregion
+
+#region Spectra
+
+def get_spectra_sources():
+    return np.array(['ZCB', 'DEIMOS', 'FMOS', 'LEGAC', 'DESI'])
+
+def get_spectra(catalog_name, source_id, ra, dec):
+    spectra = None
+
+    match catalog_name:
+        case 'ZCB':
+            spectra = get_ZCB_spectra(source_id)
+        case 'DEIMOS':
+            spectra = get_DEIMOS_spectra(source_id)
+        case 'FMOS':
+            spectra = get_FMOS_spectra(source_id)
+        case 'LEGAC':
+            spectra = get_LEGAC_spectra(source_id)
+        case 'DESI':
+            spectra = get_DESI_spectra(source_id, ra, dec)
+
+    if spectra is not None:
+        if isinstance(spectra, StructType):
+            spectra = [spectra]
+
+    return spectra
+
+def get_ZCB_spectra(zcb_id):
+    catalog_params = get_params('ZCOSMOS-BRIGHT')
+    with CatalogData(catalog_params) as catalog_data:
+        catalog_name = catalog_data.name
+        idx = catalog_data.get_index(zcb_id)
+        if np.size(idx) == 0:
+            raise CatalogException(f"Missing id {zcb_id} in catalog ZCOSMOS-BRIGHT")
+        filename = catalog_data.sources['FileName'][idx]
+
+    cache_filename = f"{catalog_params.catalog_path}/spectra/{filename}"
+    if not os.path.isfile(cache_filename):
+        url = f"https://irsa.ipac.caltech.edu/data/COSMOS/spectra/z-cosmos/DR3/{filename}"
+        if not files.download(url, cache_filename):
+            raise CatalogException(f"Missing spectra file for {zcb_id} in catalog ZCOSMOS-BRIGHT")
+
+    with fits.open(cache_filename) as hdul:
+        spectrum = hdul[1].data # pylint: disable=no-member
+
+        spectra = StructType()
+        spectra.catalog = catalog_name
+        spectra.source_id = zcb_id
+        spectra.source_name = f"{zcb_id:.0f}"
+        spectra.wavelength = spectrum['WAVE'].flatten()
+        spectra.flux = spectrum['FLUX_REDUCED'].flatten()
+
+    return spectra
+
+def get_DEIMOS_spectra(deimos_id):
+    catalog_params = get_params('DEIMOS')
+    with CatalogData(catalog_params) as catalog_data:
+        index_filename = f"{catalog_params.catalog_path}/deimos_redshift_linksIRSA.tbl"
+
+        catalog_name = catalog_data.name
+        idx = catalog_data.get_index(deimos_id)
+        file_id = catalog_data.sources['ID'][idx]
+
+    if not os.path.isfile(index_filename):
+        url = 'https://irsa.ipac.caltech.edu/data/COSMOS/spectra/deimos/deimos_redshift_linksIRSA.tbl'
+        if not files.download(url, index_filename):
+            raise CatalogException('Missing index file for catalog DEIMOS')
+
+    file_index = astropy.io.ascii.read(index_filename)
+    file_index = file_index[file_index['ID'] == file_id]
+
+    if len(file_index) == 0 or file_index['fits1d'].filled('') == '':
+        return None
+
+    url = f"https://irsa.ipac.caltech.edu{re.search(r'href=\"([^\"]+)\"', file_index['fits1d'][0]).group(1)}"
+    cache_filename = f"{catalog_params.catalog_path}/spectra/{os.path.basename(url)}"
+    if not os.path.isfile(cache_filename):
+        if not files.download(url, cache_filename):
+            raise CatalogException(f"Missing spectra file for {deimos_id} in catalog DEIMOS")
+
+    with fits.open(cache_filename) as hdul:
+        spectrum = hdul[1].data # pylint: disable=no-member
+        spectra = StructType()
+        spectra.catalog = catalog_name
+        spectra.source_id = deimos_id
+        spectra.source_name = file_id
+        spectra.wavelength = spectrum['LAMBDA'].flatten()
+        spectra.flux_1d = spectrum['FLUX'].flatten()
+        # TODO: Add support for 2D spectra
+
+    return spectra
+
+def get_FMOS_spectra(fmos_id):
+    catalog_params = get_params('FMOS')
+    with CatalogData(catalog_params) as catalog_data:
+        if not os.path.isdir(f"{catalog_params.catalog_path}/FitsFiles"):
+            raise CatalogException('Missing FitsFiles directory in catalog FMOS, download from: https://member.ipmu.jp/fmos-cosmos/FC_spectra.html')
+
+        catalog_name = catalog_data.name
+        idx = catalog_data.get_index(fmos_id)
+        if np.size(idx) == 0:
+            raise CatalogException(f"Missing id {fmos_id} in catalog FMOS")
+
+        name = catalog_data.sources['FMOS_ID'][idx]
+        obs_date_hl = catalog_data.sources['OBS_DATE_HL'][idx]
+        obs_date_hs = catalog_data.sources['OBS_DATE_HS'][idx]
+        obs_date_jl = catalog_data.sources['OBS_DATE_JL'][idx]
+
+    obs_date = max(obs_date_hl, obs_date_hs, obs_date_jl)
+    if obs_date == -99:
+        raise CatalogException(f"Missing OBS_DATE for {name} in catalog FMOS")
+
+    try:
+        filename_1d = glob.glob(f"{catalog_params.catalog_path}/FitsFiles/{obs_date}/{name}*1d.fits")[0]
+    except IndexError as e:
+        raise CatalogException(f"Missing 1D spectra file for {name} in catalog FMOS") from e
+
+    with fits.open(filename_1d) as hdul:
+        flux_1d = hdul[0].data # pylint: disable=no-member
+        header = hdul[0].header # pylint: disable=no-member
+
+    try:
+        filename_2d = glob.glob(f"{catalog_params.catalog_path}/FitsFiles/{obs_date}/{name}*2d.fits")[0]
+    except IndexError as e:
+        raise CatalogException(f"Missing 2D spectra file for {name} in catalog FMOS") from e
+
+    with fits.open(filename_2d) as hdul:
+        flux_2d = hdul[0].data # pylint: disable=no-member
+
+    wavelength = header["CRVAL1"] + header["CD1_1"] * np.arange(header["NAXIS1"])
+
+    spectra = StructType()
+    spectra.catalog = catalog_name
+    spectra.source_id = fmos_id
+    spectra.source_name = name
+    spectra.wavelength = wavelength
+    spectra.flux_1d = flux_1d
+    spectra.flux_2d = flux_2d
+
+    return spectra
+
+def get_LEGAC_spectra(legac_id):
+    catalog_params = get_params('LEGAC')
+    with CatalogData(catalog_params) as catalog_data:
+        spectra_path = f"{catalog_params.catalog_path}/spectra"
+        if not os.path.isdir(spectra_path):
+            raise CatalogException('Missing spectra directory in catalog LEGAC, download files from: https://archive.eso.org/wdb/wdb/adp/phase3_spectral/query?collection_name=LEGA-C&max_rows_returned=5000 then rename files using "../scripts/rename-LEGAC-spectra.sh".')
+
+        catalog_name = catalog_data.name
+        idx = catalog_data.get_index(legac_id)
+        if np.size(idx) == 0:
+            raise CatalogException(f"Missing id {legac_id} in catalog LEGAC")
+
+        file_id = int(catalog_data.sources['ID'][idx])
+
+    filenames = np.array([f for f in os.listdir(spectra_path) if f.startswith('legac')])
+    source_ids = np.array([int(re.search(r'legac_[^_]+_(\d+)_', s).group(1)) for s in filenames])
+    file_filter = source_ids == file_id
+    filenames = filenames[file_filter]
+
+    if np.size(filenames) == 0:
+        return None
+
+    spectra = []
+
+    for i, filename in enumerate(filenames):
+        with fits.open(f"{catalog_params.catalog_path}/spectra/{filename}") as hdul:
+            data = hdul[1].data # pylint: disable=no-member
+            spectrum = StructType()
+            spectrum.catalog = catalog_name
+            spectrum.source_id = legac_id
+            spectrum.source_name = filenames[i]
+            spectrum.wavelength = data['WAVE'].flatten()
+            spectrum.flux = data['FLUX'].flatten()
+            spectra.append(spectrum)
+
+    return spectra
+
+DESI_HDUL_FIBREMAP = 1
+DESI_BANDS = ['b', 'r', 'z']
+DESI_HDUL_BAND_START = [3, 8, 13]
+
+def get_DESI_spectra(desi_id, ra, dec):
+    catalog_params = get_params('DESI')
+
+    surveys = ['main', 'sv3', 'sv2', 'sv1']
+    programs = ['dark', 'bright', 'backup']
+    pixnum = healpix.get_healpix_from_skycoord(6, SkyCoord(ra=ra, dec=dec, unit=(u.degree,u.degree))) # 2**6 = nside=64
+    pixgroup = pixnum // 100
+
+    cache_path = f"{catalog_params.catalog_path}/spectra/{pixgroup}/{pixnum}"
+    if not os.path.isdir(cache_path):
+        tmp_cache_path = f"{cache_path}.part"
+        os.makedirs(tmp_cache_path, exist_ok=True)
+        for survey in surveys:
+            for program in programs:
+                url = f"https://data.desi.lbl.gov/public/edr/spectro/redux/fuji/healpix/{survey}/{program}/{pixgroup}/{pixnum}/coadd-{survey}-{program}-{pixnum}.fits"
+                cache_filename = f"{tmp_cache_path}/coadd-{survey}-{program}-{pixnum}.fits"
+                if not os.path.isfile(cache_filename):
+                    files.download(url, cache_filename)
+        os.rename(tmp_cache_path, cache_path)
+
+    spectra = []
+
+    for survey in surveys:
+        for program in programs:
+            cache_filename = f"{cache_path}/coadd-{survey}-{program}-{pixnum}.fits"
+            if os.path.isfile(cache_filename):
+                with fits.open(cache_filename) as hdul:
+                    fibremap = hdul[DESI_HDUL_FIBREMAP].data # pylint: disable=no-member
+                    idx = np.where(fibremap['TARGETID'] == desi_id)[0]
+                    if np.size(idx) == 1:
+                        for i, band in enumerate(DESI_BANDS):
+                            spectrum = StructType()
+                            spectrum.catalog = 'DESI'
+                            spectrum.source_id = desi_id
+                            spectrum.source_name = f"{desi_id:.0f} {band}-band"
+                            spectrum.wavelength = hdul[DESI_HDUL_BAND_START[i]].data
+                            spectrum.flux = hdul[DESI_HDUL_BAND_START[i]+1].data[idx,:].flatten()
+                            spectra.append(spectrum)
+                    elif np.size(idx) > 1:
+                        raise CatalogException(f"Multiple indices {idx} in {cache_filename}")
+
+    if len(spectra) == 0:
+        raise CatalogException(f"Missing spectra for {desi_id} in catalog DESI")
+
+    return spectra
 
 #endregion
 
