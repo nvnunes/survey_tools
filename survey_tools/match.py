@@ -25,9 +25,9 @@ def cross_match_catalogs_by_id(cat1, cat2, id_field1=None, id_field2=None, assum
         return matches
 
     if id_field1 is None:
-        id_field1 = catalog.get_id_field(cat1)
+        id_field1 = cat1.id_field
     if id_field2 is None:
-        id_field2 = catalog.get_id_field(cat2)
+        id_field2 = cat2.id_field
 
     _, cat1_idx, cat2_idx = np.intersect1d(cat1.sources[id_field1], cat2.sources[id_field2], assume_unique=assume_unique, return_indices=True)
 
@@ -71,10 +71,10 @@ def cross_match_catalogs_by_ra_dec(cat1, cat2, max_sep=None, mode=None):
     cat1_index_map = np.arange(cat1.count)[cat1_filter]
     cat2_index_map = np.arange(cat2.count)[cat2_filter]
 
-    ra1  = cat1.sources[catalog.get_ra_field(cat1)][cat1_filter]
-    dec1 = cat1.sources[catalog.get_dec_field(cat1)][cat1_filter]
-    ra2  = cat2.sources[catalog.get_ra_field(cat2)][cat2_filter]
-    dec2 = cat2.sources[catalog.get_dec_field(cat2)][cat2_filter]
+    ra1  = cat1.sources[cat1.ra_field][cat1_filter]
+    dec1 = cat1.sources[cat1.dec_field][cat1_filter]
+    ra2  = cat2.sources[cat2.ra_field][cat2_filter]
+    dec2 = cat2.sources[cat2.dec_field][cat2_filter]
 
     cosmo = FlatLambdaCDM(H0=70, Om0=0.3)
     DA1 = cosmo.angular_diameter_distance(z1[cat1_filter])
@@ -167,10 +167,10 @@ def cross_match_catalogs_by_id_ra_dec(cat1, cat2, id_field1=None, id_field2=None
         return matches
 
     if id_field1 is None:
-        id_field1 = catalog.get_id_field(cat1)
+        id_field1 = cat1.id_field
 
     if id_field2 is None:
-        id_field2 = catalog.get_id_field(cat2)
+        id_field2 = cat2.id_field
 
     matches_by_id     = cross_match_catalogs_by_id(cat1, cat2, id_field1, id_field2)
     matches_by_ra_dec = cross_match_catalogs_by_ra_dec(cat1, cat2, max_sep=sky_max_sep, mode=sky_mode)
@@ -235,7 +235,7 @@ def append_cross_matched_data(matches, cat1, cat2):
     if has_spp:
         if not table.has_field(cat1, 'spp'):
             cat1.spp = Table()
-            cat1.spp.add_column(cat1.sources[catalog.get_id_field(cat1)])
+            cat1.spp.add_column(cat1.sources[cat1.id_field])
 
         spp = -99.0 * np.ones((cat1.count, 5)) # mass, sfr, Av, chi2, z_spp
         spp_flags = 99 * np.ones((cat1.count))
@@ -244,7 +244,7 @@ def append_cross_matched_data(matches, cat1, cat2):
     if has_lines:
         if not table.has_field(cat1, 'lines'):
             cat1.lines = Table()
-            cat1.lines.add_column(cat1.sources[catalog.get_id_field(cat1)])
+            cat1.lines.add_column(cat1.sources[cat1.id_field])
 
         line_names = catalog.get_line_names()
         num_lines = len(line_names)
@@ -299,7 +299,7 @@ def append_cross_matched_data(matches, cat1, cat2):
     if num_missing_sources > 0:
         _add_missing_sources(cat1, cat2, matches.unmatched_idx2)
 
-        match_id = np.vstack([match_id, cat2.sources[catalog.get_id_field(cat2)][matches.unmatched_idx2].reshape((-1,1))])
+        match_id = np.vstack([match_id, cat2.sources[cat2.id_field][matches.unmatched_idx2].reshape((-1,1))])
         match_num = np.vstack([match_num, matches.unmatched_num.reshape((-1,1))])
         match_sep = np.vstack([match_sep, np.zeros((num_missing_sources, 1))])
         match_dist = np.vstack([match_dist, np.zeros((num_missing_sources, 1))])
@@ -373,7 +373,7 @@ def append_cross_matched_data(matches, cat1, cat2):
     # Step 5: Add to idmap
     if not table.has_field(cat1, 'idmap'):
         cat1.idmap = Table()
-        cat1.idmap.add_column(np.array(cat1.sources[catalog.get_id_field(cat1)]), name=catalog.get_id_field(cat1, table_name='idmap'))
+        cat1.idmap.add_column(np.array(cat1.sources[cat1.id_field]), name=catalog.get_id_field(cat1, table_name='idmap'))
 
     table.add_fields(cat1.idmap, cat2.source, match_id)
     table.add_fields(cat1.idmap, f"{cat2.source}_num", match_num)
@@ -423,8 +423,7 @@ def _get_source_id(catalog_data, idx_or_filter = None):
     else:
         N = np.sum(idx_or_filter)
 
-    field_name = catalog.get_id_field(catalog_data)
-    return catalog_data.sources[field_name][idx_or_filter]
+    return catalog_data.sources[catalog_data.id_field][idx_or_filter]
 
 # pylint: disable=redefined-builtin
 def _add_missing_sources(cat1, cat2, idx_or_filter):
@@ -434,16 +433,16 @@ def _add_missing_sources(cat1, cat2, idx_or_filter):
     if table.has_field(cat2.sources, 'index'):
         id = cat2.sources['index'][idx_or_filter]
     else:
-        id = cat2.sources[catalog.get_id_field(cat2)][idx_or_filter].astype(np.int_)
+        id = cat2.sources[cat2.id_field][idx_or_filter].astype(np.int_)
 
-    ra = cat2.sources[catalog.get_ra_field(cat2)][idx_or_filter]
-    dec = cat2.sources[catalog.get_dec_field(cat2)][idx_or_filter]
+    ra = cat2.sources[cat2.ra_field][idx_or_filter]
+    dec = cat2.sources[cat2.dec_field][idx_or_filter]
     z, z_flag = catalog.get_redshift_any(cat2, idx_or_filter)
 
     offset = 10000000*(len(cat1.all_sources)-1)
     id += offset
 
-    cat1.sources = table.add_rows(cat1, cat1.sources, [catalog.get_id_field(cat1), catalog.get_ra_field(cat1), catalog.get_dec_field(cat1)], np.array([id, ra, dec]), default_value_func = _get_default_value)
+    cat1.sources = table.add_rows(cat1, cat1.sources, [cat1.id_field, cat1.ra_field, cat1.dec_field], np.array([id, ra, dec]), default_value_func = _get_default_value)
 
     if table.has_field(cat1, 'redshift'):
         cat1.redshift = table.add_rows(cat1, cat1.redshift, [catalog.get_id_field(cat1, 'redshift'), 'z_merged', 'z_merged_flag'], np.array([id, z, z_flag]), default_value_func = _get_default_value)

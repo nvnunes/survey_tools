@@ -12,11 +12,13 @@ import pickle
 from compress_pickle import dump, load
 import numpy as np
 from astropy.coordinates import Angle, SkyCoord
+from astropy.cosmology import FlatLambdaCDM
 import astropy.io
 from astropy.io import fits
 from astropy.table import Table, vstack
 import astropy.units as u
 from astropy.wcs import WCS
+from dust_extinction.parameter_averages import F99
 from regions import RectangleSkyRegion
 from scipy.special import gamma, gammainc # pylint: disable=no-name-in-module
 from survey_tools import sky
@@ -105,492 +107,516 @@ def get_params(catalog_name, field_name = None, filter_name = None):
 
     return catalog_params
 
-#endregion
-
-#region Read
-
-# pylint: disable=no-member
-def read(catalog_params, force_tables = False, region = None, region_wcs = None):
-    catalog_data = StructType()
-    catalog_data.params = catalog_params
-    catalog_data.catalog = catalog_params.catalog
-    catalog_data.count = 0
-    catalog_data.field = catalog_params.field
-    catalog_data.hduls = []
-
-    catalog_data.redshift_is_copy = False
-    catalog_data.spp_is_copy = False
-    catalog_data.lines_is_copy = False
-    catalog_data.clumps_is_copy = False
-
-    match catalog_params.catalog:
-        case 'UVISTA':
-            catalog_data.source = 'UVISTA'
-            catalog_data.name = 'COSMOS/UltraVISTA'
-            catalog_data.date = datetime(2015, 8, 20)
-            catalog_data.frame = 'fk5'
-
-            # Columns: id ra dec xpix ypix Ks_tot eKs_tot Ks eKs H eH J eJ Y eY ch4 ech4 ch3 ech3 ch2 ech2 ch1 ech1 zp ezp ip eip rp erp V eV gp egp B eB u eu IA484 eIA484 IA527 eIA527 IA624 eIA624 IA679 eIA679 IA738 eIA738 IA767 eIA767 IB427 eIB427 IB464 eIB464 IB505 eIB505 IB574 eIB574 IB709 eIB709 IB827 eIB827 fuv efuv nuv enuv mips24 emips24 K_flag K_star K_Kron apcor z_spec z_spec_cc z_spec_id star contamination nan_contam orig_cat_id orig_cat_field USE
-            file_path = f"{catalog_params.catalog_path}/UVISTA_final_v4.1.cat"
-            include_names = ['id', 'ra', 'dec', 'xpix', 'ypix', 'Ks_tot', 'eKs_tot', 'Ks', 'eKs', 'H', 'eH', 'J', 'eJ', 'K_flag', 'K_star', 'K_Kron', 'z_spec', 'z_spec_cc', 'z_spec_id', 'star', 'contamination', 'USE']
-            catalog_data.sources = astropy.io.ascii.read(file_path, include_names=include_names)
-            catalog_data.count = len(catalog_data.sources) # needed in the code below so cannot wait until the end
-
-            # Columns: id z_spec z_a z_m1 chi_a z_p chi_p z_m2 odds l68 u68 l95 u95 l99 u99 nfilt q_z z_peak peak_prob z_mc
-            file_path = f"{catalog_params.catalog_path}/UVISTA_final_v4.1.zout"
-            catalog_data.redshift = astropy.io.ascii.read(file_path)
-            catalog_data.redshift['z_spec_cc'] = catalog_data.sources['z_spec_cc']
-
-            # Columns: id z tau metal lage Av lmass lsfr lssfr la2t chi2
-            file_path = f"{catalog_params.catalog_path}/UVISTA_final_BC03_v4.1.fout"
-            catalog_data.spp = astropy.io.ascii.read(file_path, header_start=16)
-            catalog_data.spp['lmass'][np.isnan(catalog_data.spp['lmass'])] = -99
-            catalog_data.spp['lsfr'][np.isnan(catalog_data.spp['lsfr'])] = -99
-            no_fit_filter = catalog_data.spp['chi2'] == -1
-            catalog_data.spp['ltau'][no_fit_filter]  = -99
-            catalog_data.spp['metal'][no_fit_filter] = -99
-            catalog_data.spp['lage'][no_fit_filter]  = -99
-            catalog_data.spp['Av'][no_fit_filter]    = -99
-            catalog_data.spp['lmass'][no_fit_filter] = -99
-            catalog_data.spp['lsfr'][no_fit_filter]  = -99
-            catalog_data.spp['lssfr'][no_fit_filter] = -99
-            catalog_data.spp['la2t'][no_fit_filter]  = -99
-
-            #,id,ra,dec,z_spec,z_phot,log_mass,log_sfr,Av,is_mass_clumpy,is_UV_clumpy,UV_frac_clump
-            file_path = f"{catalog_params.catalog_path}/Viz_COSMOS_deconv_clumpy_catalog.csv"
-            if os.path.exists(file_path):
-                clump_data = astropy.io.ascii.read(file_path)
-
-                id = np.zeros((catalog_data.count), dtype=np.int_) # pylint: disable=redefined-builtin
-                is_mass_clumpy = np.zeros((catalog_data.count), dtype=np.bool)
-                is_UV_clumpy = np.zeros((catalog_data.count), dtype=np.bool)
-                UV_frac_clump = -1 * np.ones((catalog_data.count))
-
-                for i in np.arange(len(clump_data)):
-                    indexes = np.where(catalog_data.sources['id'] == clump_data['id'][i])[0]
-                    if len(indexes) == 0:
-                        continue
-                    idx = indexes[0]
-
-                    if catalog_data.sources['z_spec'][idx] != clump_data['z_spec'][i]:
-                        raise Exception(f"z_spec doesn't match: {clump_data['id'][i]}")
-
-                    id[idx] = clump_data['id'][i]
-                    is_mass_clumpy[idx] = clump_data['is_mass_clumpy'][i] == 'True'
-                    is_UV_clumpy[idx] = clump_data['is_UV_clumpy'][i] == 'True'
-                    UV_frac_clump[idx] = clump_data['UV_frac_clump'][i]
-
-                catalog_data.clumps = Table([
-                        id, is_mass_clumpy, is_UV_clumpy, UV_frac_clump
-                    ], names=[
-                        'id', 'is_mass_clumpy', 'is_UV_clumpy', 'UV_frac_clump',
-                    ], dtype=[
-                        np.int_, np.bool, np.bool, np.float64,
-                    ]
-                )
-
-        case 'ZCOSMOS-BRIGHT':
-            catalog_data.source = 'ZCB'
-            catalog_data.name = 'zCOSMOS Bright'
-            catalog_data.date = datetime(2016, 1, 19)
-            catalog_data.frame = 'fk5'
-
-            file_path = f"{catalog_params.catalog_path}/zcosmos3.dat"
-            readme_path = f"{catalog_params.catalog_path}/ReadMe.txt"
-
-            catalog_data.sources = astropy.io.ascii.read(file_path, readme=readme_path, include_names=['zCOSMOS','RAdeg','DEdeg','z','CC','Imag'])
-            catalog_data.sources.rename_column('zCOSMOS', 'id')
-
-            source_filter = (catalog_data.sources['CC'] > 0) & (catalog_data.sources['z'] > 0.0)
-            catalog_data.sources = catalog_data.sources[source_filter]
-
-        case 'ZCOSMOS-DEEP':
-            catalog_data.source = 'ZCD'
-            catalog_data.name = 'zCOSMOS Deep'
-            catalog_data.date = datetime(2016, 1, 19) # Not known
-            catalog_data.frame = 'fk5'
-
-            file_path = f"{catalog_params.catalog_path}/cosmos_zspec_zgt2.txt" # zCOSMOS Deep (not public, unreleased)
-            if not os.path.exists(file_path):
-                return catalog_data
-
-            catalog_data.sources = astropy.io.ascii.read(file_path, include_names=['ra','dec','z_spec','Q_f'])
-            catalog_data.sources.add_column(np.arange(len(catalog_data.sources))+1, name='id', index=0)
-            catalog_data.sources.rename_column('Q_f'  , 'z_spec_cc')
-
-        case '3D-HST':
-            catalog_data.source = '3DHST'
-            catalog_data.name = '3D-HST'
-            catalog_data.date = datetime(2014, 9, 3)
-            catalog_data.frame = 'fk5'
-
-            file_path = f"{catalog_params.catalog_path}/{catalog_params.field_file_prefix}_3dhst.v{catalog_params.field_version}.cats/Catalog/{catalog_params.field_file_prefix}_3dhst.v{catalog_params.field_version}.cat.FITS"
-            if force_tables:
-                catalog_data.sources = Table.read(file_path)
-            else:
-                sources_hdul = fits.open(file_path)
-                catalog_data.sources = sources_hdul[1].data
-                catalog_data.hduls.append(sources_hdul)
-
-            file_path = f"{catalog_params.catalog_path}/{catalog_params.field_file_prefix}_3dhst_v4.1.5_catalogs/{catalog_params.field_file_prefix}_3dhst.v4.1.5.zfit.linematched.fits"
-            if force_tables:
-                catalog_data.redshift = Table.read(file_path)
-            else:
-                redshift_hdul = fits.open(file_path)
-                catalog_data.redshift = redshift_hdul[1].data
-                catalog_data.hduls.append(redshift_hdul)
-
-            file_path = f"{catalog_params.catalog_path}/{catalog_params.field_file_prefix}_3dhst.v{catalog_params.field_version:.1f}.cats/Fast/{catalog_params.field_file_prefix}_3dhst.v{catalog_params.field_version:.1f}.fout.FITS"
-            if force_tables:
-                catalog_data.spp = Table.read(file_path)
-            else:
-                spp_hdul = fits.open(file_path)
-                catalog_data.spp = spp_hdul[1].data
-                catalog_data.hduls.append(spp_hdul)
-
-            file_path = f"{catalog_params.catalog_path}/{catalog_params.field_file_prefix}_3dhst_v4.1.5_catalogs/{catalog_params.field_file_prefix}_3dhst.v4.1.5.linefit.linematched.fits"
-            if force_tables:
-                catalog_data.lines = Table.read(file_path)
-            else:
-                line_hdul = fits.open(file_path)
-                catalog_data.lines = line_hdul[1].data
-                catalog_data.hduls.append(line_hdul)
-
-        case 'VUDS':
-            catalog_data.source = 'VUDS'
-            catalog_data.name = 'VUDS'
-            catalog_data.date = datetime(2015, 8, 12)
-            catalog_data.frame = 'fk5'
-
-            match catalog_data.field:
-                case 'COSMOS':
-                    file_path = f"{catalog_params.catalog_path}/cosmos.dat"
-                case 'GOODS-S':
-                    file_path = f"{catalog_params.catalog_path}/ecdfs.dat"
-
-            readme_path = f"{catalog_params.catalog_path}/ReadMe"
-
-            catalog_data.sources = astropy.io.ascii.read(file_path, readme=readme_path, include_names=['VUDS', 'RAdeg', 'DEdeg', 'zspec', 'zflags'])
-            catalog_data.sources.rename_column('VUDS', 'id')
-
-            table.add_fields(catalog_data.sources, 'index', np.arange(len(catalog_data.sources))+1)
-
-        case 'Casey':
-            catalog_data.source = 'Casey'
-            catalog_data.name = 'Casey DSFG'
-            catalog_data.date = datetime(2012, 12, 1)
-            catalog_data.frame = 'fk5'
-
-            file_path = f"{catalog_params.catalog_path}/apj449592t1_mrt.txt"
-            catalog_data.sources = astropy.io.ascii.read(file_path)
-
-            table.add_fields(catalog_data.sources, 'index', np.arange(len(catalog_data.sources))+1)
-
-            catalog_data.sources['ra'] = Angle([f"{catalog_data.sources['Name'][i][-18:-16]}h{catalog_data.sources['Name'][i][-16:-14]}m{catalog_data.sources['Name'][i][-14:-9]}s" for i in np.arange(len(catalog_data.sources))]).degree
-            catalog_data.sources['dec'] = Angle([f"{catalog_data.sources['Name'][i][-9:-6]}d{catalog_data.sources['Name'][i][-6:-4]}m{catalog_data.sources['Name'][i][-4:]}s" for i in np.arange(len(catalog_data.sources))]).degree
-
-            # Filter to selected field
-            match catalog_data.field:
-                # U = UDS;
-                # S = CDFS;
-                # C = COSMOS;
-                # L = LHN;
-                # G = GOODS-N;
-                # E = Elais-N1
-                case 'UDS':
-                    field_flag = 'U'
-                case 'COSMOS':
-                    field_flag = 'C'
-                case 'GOODS-N':
-                    field_flag = 'G'
-                case _:
-                    field_flag = 'X'
-
-            sources_filter = catalog_data.sources['f_zphot'] == field_flag
-            catalog_data.sources = catalog_data.sources[sources_filter]
-
-        case 'DEIMOS':
-            catalog_data.source = 'DEIMOS'
-            catalog_data.name = 'DEIMOS 10K'
-            catalog_data.date = datetime(2017, 12, 27)
-            catalog_data.frame = 'fk5'
-
-            file_path = f"{catalog_params.catalog_path}/deimos_redshifts.tbl"
-            catalog_data.sources = astropy.io.ascii.read(file_path)
-
-            table.add_fields(catalog_data.sources, 'index', np.arange(len(catalog_data.sources))+1)
-
-            source_filter = (catalog_data.sources['Remarks'] != 'star') & ~np.isnan(catalog_data.sources['zspec'] > 0.0) & (catalog_data.sources['zspec'] > 0.0)
-            catalog_data.sources = catalog_data.sources[source_filter]
-
-        case 'MOSDEF':
-            catalog_data.source = 'MOSDEF'
-            catalog_data.name = 'MOSDEF'
-            catalog_data.date = datetime(2018, 3, 11)
-            catalog_data.frame = 'fk5'
-
-            file_path = f"{catalog_params.catalog_path}/mosdef_zcat.final_slitap.fits"
-            sources_hdul = fits.open(file_path)
-            catalog_data.sources = sources_hdul[1].data
-
-            # Filter to selected field
-            sources_filter = (catalog_data.sources['FIELD'] == catalog_data.field) & (catalog_data.sources['ID_V4'] >= 0) & (catalog_data.sources['Z_MOSFIRE'] >= 0.0)
-            catalog_data.sources = catalog_data.sources[sources_filter]
-
-            # Remove Duplicates
-            dup_filter = np.zeros((len(catalog_data.sources)), dtype=np.bool)
-            unique_ids, counts = np.unique(catalog_data.sources['ID_V4'], return_counts=True)
-            dupped_ids = unique_ids[counts > 1]
-
-            for i in np.arange(len(dupped_ids)):
-                dup_id = dupped_ids[i]
-                current_filter = catalog_data.sources['ID_V4'] == dup_id
-                dup_filter[current_filter] = True
-                keep_idx = np.argmax(current_filter)
-                dup_filter[keep_idx] = False
-                catalog_data.sources['z_MOSFIRE'][keep_idx] = np.mean(catalog_data.sources['z_MOSFIRE'][current_filter])
-
-            catalog_data.sources = catalog_data.sources[~dup_filter]
-
-            # Emission Lines (NOTE: these are not line matched, so do so manually)
-            file_path = f"{catalog_params.catalog_path}/linemeas_nocor.fits"
-            lines_hdul = fits.open(file_path)
-            lines = lines_hdul[1].data
-
-            line_prefixes = get_MOSDEF_line_prefixes()
-            empty_idx = np.argmax(lines['ID'] == -9999) # HACK: use the first row we're going to skip anyway
-            lines[empty_idx] = np.zeros((1), dtype=lines.columns.dtype)[0]
-            line_indexes = empty_idx * np.ones((len(catalog_data.sources)), dtype=np.int_)
-            indexes = np.arange(len(lines))
-            for i in np.arange(len(catalog_data.sources)):
-                row_filter = (lines['FIELD'] == catalog_data.sources['FIELD'][i]) & (lines['ID'] == catalog_data.sources['ID_V4'][i])
-                num_rows = np.sum(row_filter)
-                keep_idx = np.argmax(row_filter) # first row
-
-                if num_rows == 0:
-                    continue
-                elif num_rows > 1:
-                    for j in np.arange(len(line_prefixes)):
-                        flux_field_name = f"{line_prefixes[j]}_PreferredFlux"
-                        error_field_name = f"{line_prefixes[j]}_PreferredFlux_err"
-                        sky_flag_field_name = f"{line_prefixes[j]}_slflag"
-
-                        fluxes = lines[flux_field_name][row_filter]
-                        errors = lines[error_field_name][row_filter]
-                        slflags = lines[sky_flag_field_name][row_filter]
-
-                        value_filter = (fluxes > 0.0) & (errors > 0.0)
-                        if np.sum(value_filter) > 0:
-                            weights = 1/np.power(errors[value_filter], 2)
-                            lines[keep_idx][flux_field_name] = np.average(fluxes[value_filter], weights=weights)
-                            lines[keep_idx][error_field_name] = np.sqrt(1/np.sum(weights))
-                            lines[keep_idx][sky_flag_field_name] = min(slflags[value_filter])
-
-                line_indexes[i] = keep_idx
-
-            catalog_data.lines = lines[line_indexes]
-
-            catalog_data.hduls = [sources_hdul, lines_hdul]
-
-        case 'FMOS':
-            catalog_data.source = 'FMOS'
-            catalog_data.name = 'FMOS-COSMOS'
-            catalog_data.date = datetime(2019, 1, 25)
-            catalog_data.frame = 'fk5'
-
-            file_path = f"{catalog_params.catalog_path}/fmos-cosmos_catalog_2019.fits"
-            sources_hdul = fits.open(file_path)
-            catalog_data.sources = sources_hdul[1].data
-            catalog_data.lines = catalog_data.sources # copy of sources to access emission line data
-            catalog_data.lines_is_copy = True
-            catalog_data.hduls = [sources_hdul]
-
-        case 'KMOS3D':
-            catalog_data.source = 'KMOS3D'
-            catalog_data.name = 'KMOS3D'
-            catalog_data.date = datetime(2019, 7, 12)
-            catalog_data.frame = 'fk5'
-
-            file_path = f"{catalog_params.catalog_path}/k3d_fnlsp_table_v3.fits"
-            sources_hdul = fits.open(file_path)
-            catalog_data.sources = sources_hdul[1].data
-
-            file_path = f"{catalog_params.catalog_path}/k3d_fnlsp_table_hafits_v3.fits"
-            lines_hdul = fits.open(file_path)
-            catalog_data.lines = lines_hdul[1].data
-
-            # Filter to selected field
-            match catalog_data.field:
-                case 'COSMOS':
-                    field_code = 'COS'
-                case 'GOODS-S':
-                    field_code = 'GS'
-                case 'UDS':
-                    field_code = 'U'
-
-            sources_filter = catalog_data.sources['FIELD'] == field_code
-            catalog_data.sources = catalog_data.sources[sources_filter]
-
-            sources_filter = catalog_data.lines['FIELD'] == field_code
-            catalog_data.lines = catalog_data.lines[sources_filter]
-
-            # Sources and Lines are line-matched but sources has more objects, drop them
-            if len(catalog_data.sources) > len(catalog_data.lines):
-                catalog_data.sources = catalog_data.sources[0:len(catalog_data.lines)]
-
-            catalog_data.spp = catalog_data.sources # copy of sources to spp data
-            catalog_data.spp_is_copy = True
-
-            catalog_data.hduls = [sources_hdul, lines_hdul]
-
-        case 'C3R2':
-            catalog_data.source = 'C3R2'
-            catalog_data.name = 'C3R2 DR1+DR2+DR3'
-            catalog_data.date = datetime(2021, 6, 18)
-            catalog_data.frame = 'fk5'
-
-            file_path = f"{catalog_params.catalog_path}/c3r2_DR1+DR2_2019april11.txt"
-            catalog_data.sources12 = astropy.io.ascii.read(file_path)
-
-            file_path = f"{catalog_params.catalog_path}/C3R2-DR3-18june2021.txt"
-            catalog_data.sources3 = astropy.io.ascii.read(file_path)
-
-            catalog_data.sources = vstack([catalog_data.sources12, catalog_data.sources3])
-
-            source_filter = np.char.startswith(catalog_data.sources['ID'], catalog_data.field)
-            catalog_data.sources = catalog_data.sources[source_filter]
-
-            table.add_fields(catalog_data.sources, 'index', np.arange(len(catalog_data.sources))+1)
-
-            catalog_data.sources['ra'] = Angle([f"{catalog_data.sources['RAh'][i]}h{catalog_data.sources['RAm'][i]}m{catalog_data.sources['RAs'][i]}s" for i in np.arange(len(catalog_data.sources))]).degree
-            catalog_data.sources['dec'] = Angle([f"{(catalog_data.sources['DE-'][i] if catalog_data.sources['DE-'][i] != '' else '+')}{catalog_data.sources['DEd'][i]}d{catalog_data.sources['DEm'][i]}m{catalog_data.sources['DEs'][i]}s" for i in np.arange(len(catalog_data.sources))]).degree
-
-        case 'LEGAC':
-            catalog_data.source = 'LEGAC'
-            catalog_data.name = 'LEGA-C'
-            catalog_data.date = datetime(2021, 8, 2)
-            catalog_data.frame = 'fk5'
-
-            file_path = f"{catalog_params.catalog_path}/legac_dr3_cat.fits"
-            sources_hdul = fits.open(file_path)
-            catalog_data.sources = sources_hdul[1].data
-            catalog_data.lines = catalog_data.sources # copy to access emission line data
-            catalog_data.lines_is_copy = True
-            catalog_data.hduls = [sources_hdul]
-
-        case 'HSCSSP':
-            catalog_data.source = 'HSCSSP'
-            catalog_data.name = 'HSC SSP Public'
-            catalog_data.date = datetime(2000, 1, 1) # So all other z-specs of the same file take precidence (since this is a cross-matched catalog)
-            catalog_data.frame = 'fk5'
-
-            match catalog_data.field:
-                case 'AEGIS':
-                    file_path = f"{catalog_params.catalog_path}/EGS-specz-v2.3.fits"
-                case 'COSMOS':
-                    file_path = f"{catalog_params.catalog_path}/COSMOS-specz-v2.8-public.fits"
-
-            sources_hdul = fits.open(file_path)
-            catalog_data.sources = sources_hdul[1].data
-            catalog_data.hduls = [sources_hdul]
-
-            catalog_data.sources = fits.FITS_rec.from_columns(catalog_data.sources.columns.add_col(fits.Column(name='index', array=np.arange(len(catalog_data.sources))+1, format='K')))
-
-        case 'DESI':
-            catalog_data.source = 'DESI'
-            catalog_data.name = 'DESI EDR'
-            catalog_data.date = datetime(2023, 6, 9)
-            catalog_data.frame = 'icrs'
-
-            file_path = f"{catalog_params.catalog_path}/edr_galaxy_stellarmass_lineinfo_v1.0.fits"
-            sources_hdul = fits.open(file_path)
-            catalog_data.sources = sources_hdul[1].data
-            catalog_data.spp = catalog_data.sources # copy to access spp line data
-            catalog_data.spp_is_copy = True
-            catalog_data.lines = catalog_data.sources # copy to access emission line data
-            catalog_data.lines_is_copy = True
-            catalog_data.hduls = [sources_hdul]
-
-            catalog_data.sources = fits.FITS_rec.from_columns(catalog_data.sources.columns.add_col(fits.Column(name='index', array=np.arange(len(catalog_data.sources))+1, format='K')))
-
-            kron_radius = np.zeros((len(catalog_data.sources)))
-            value_filter = (catalog_data.sources['SERSIC'] > 0.0) & (catalog_data.sources['SHAPE_R'] > 0.0)
-            kron_radius[value_filter] = _compute_kron_radius(catalog_data.sources['SERSIC'][value_filter], re=catalog_data.sources['SHAPE_R'][value_filter])
-            catalog_data.sources = fits.FITS_rec.from_columns(catalog_data.sources.columns.add_col(fits.Column(name='kron_radius', array=kron_radius, format='D')))
-
-        case 'UVISTA-PLUS':
-            catalog_file_path = f"{catalog_params.catalog_path}/UVISTA-PLUS_COSMOS.pkl.gz"
-            with open(catalog_file_path, 'rb') as f:
-                catalog_data = load(f)
-
-            catalog_data.params = catalog_params
-            catalog_data.source = 'UVISTAP'
-
-        case '3D-HST-PLUS':
-            catalog_file_path = f"{catalog_params.catalog_path}/3D-HST-PLUS_{catalog_params.field}.pkl.gz"
-            with open(catalog_file_path, 'rb') as f:
-                catalog_data = load(f)
-
-            catalog_data.params = catalog_params
-            catalog_data.source = '3DHSTP'
-
-    catalog_data.count = len(catalog_data.sources)
-    catalog_data.all_sources = [catalog_data.source]
-    catalog_data.all_sources_date = [catalog_data.date]
-
-    if table.has_field(catalog_data, 'spp') and isinstance(catalog_data.spp, Table):
-        _, spp_flag, _ = get_spp(catalog_data)
-        table.add_fields(catalog_data.spp, 'spp_flag', spp_flag)
-
-    if region is not None:
-        if region_wcs is None:
-            if table.has_field(catalog_data.params, 'wcs'):
-                region_wcs = catalog_data.params.wcs
-            else:
-                region_wcs = WCS(naxis=2)                                  # 2D WCS for an image
-                region_wcs.wcs.crpix = [180, 180]*3600                     # Reference pixel (center of the image)
-                region_wcs.wcs.cdelt = np.array([-0.00027778, 0.00027778]) # Pixel scale in degrees (i.e., 1 arcsec/pixel)
-                region_wcs.wcs.crval = [180.0, 0.0]                        # Reference world coordinate (RA, Dec in degrees)
-                region_wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]            # Projection type (TAN for tangent-plane)
-
-        sources_filter = region.contains(SkyCoord(ra=catalog_data.sources[get_ra_field(catalog_data)], dec=catalog_data.sources[get_dec_field(catalog_data)], unit=(u.degree, u.degree)), region_wcs)
-
-        catalog_data.sources = catalog_data.sources[sources_filter]
-        catalog_data.count = len(catalog_data.sources)
-
-        if table.has_field(catalog_data, 'redshift'):
-            if catalog_data.redshift_is_copy:
-                catalog_data.redshift = catalog_data.sources
-            else:
-                catalog_data.redshift = catalog_data.redshift[sources_filter]
-
-        if table.has_field(catalog_data, 'spp'):
-            if catalog_data.spp_is_copy:
-                catalog_data.spp = catalog_data.sources
-            else:
-                catalog_data.spp = catalog_data.spp[sources_filter]
-
-        if table.has_field(catalog_data, 'lines'):
-            if catalog_data.lines_is_copy:
-                catalog_data.lines = catalog_data.sources
-            else:
-                catalog_data.lines = catalog_data.lines[sources_filter]
-
-        if table.has_field(catalog_data, 'clumps'):
-            if catalog_data.clumps_is_copy:
-                catalog_data.clumps = catalog_data.sources
-            else:
-                catalog_data.clumps = catalog_data.clumps[sources_filter]
-
-    return catalog_data
-
 def open_image(catalog_params):
     image_hdul = fits.open(catalog_params.catalog_image_path)
     return image_hdul
 
-def close(catalog_data):
-    for i in np.arange(len(catalog_data.hduls)):
-        catalog_data.hduls[i].close()
+#endregion
+
+#region Read
+
+class CatalogData:
+    def __init__(self, catalog_params, force_tables = False, region = None, region_wcs = None):
+        self.params = catalog_params
+        self.catalog = catalog_params.catalog
+        self.count = 0
+        self.field = catalog_params.field
+        self.hduls = []
+
+        self.redshift_is_copy = False
+        self.spp_is_copy = False
+        self.lines_is_copy = False
+        self.clumps_is_copy = False
+
+        match catalog_params.catalog:
+            case 'UVISTA':
+                self.source = 'UVISTA'
+                self.name = 'COSMOS/UltraVISTA'
+                self.date = datetime(2015, 8, 20)
+                self.frame = 'fk5'
+
+                # Columns: id ra dec xpix ypix Ks_tot eKs_tot Ks eKs H eH J eJ Y eY ch4 ech4 ch3 ech3 ch2 ech2 ch1 ech1 zp ezp ip eip rp erp V eV gp egp B eB u eu IA484 eIA484 IA527 eIA527 IA624 eIA624 IA679 eIA679 IA738 eIA738 IA767 eIA767 IB427 eIB427 IB464 eIB464 IB505 eIB505 IB574 eIB574 IB709 eIB709 IB827 eIB827 fuv efuv nuv enuv mips24 emips24 K_flag K_star K_Kron apcor z_spec z_spec_cc z_spec_id star contamination nan_contam orig_cat_id orig_cat_field USE
+                file_path = f"{catalog_params.catalog_path}/UVISTA_final_v4.1.cat"
+                include_names = ['id', 'ra', 'dec', 'xpix', 'ypix', 'Ks_tot', 'eKs_tot', 'Ks', 'eKs', 'H', 'eH', 'J', 'eJ', 'K_flag', 'K_star', 'K_Kron', 'z_spec', 'z_spec_cc', 'z_spec_id', 'star', 'contamination', 'USE']
+                self.sources = astropy.io.ascii.read(file_path, include_names=include_names)
+                self.count = len(self.sources) # needed in the code below so cannot wait until the end
+
+                # Columns: id z_spec z_a z_m1 chi_a z_p chi_p z_m2 odds l68 u68 l95 u95 l99 u99 nfilt q_z z_peak peak_prob z_mc
+                file_path = f"{catalog_params.catalog_path}/UVISTA_final_v4.1.zout"
+                self.redshift = astropy.io.ascii.read(file_path)
+                self.redshift['z_spec_cc'] = self.sources['z_spec_cc']
+
+                # Columns: id z tau metal lage Av lmass lsfr lssfr la2t chi2
+                file_path = f"{catalog_params.catalog_path}/UVISTA_final_BC03_v4.1.fout"
+                self.spp = astropy.io.ascii.read(file_path, header_start=16)
+                self.spp['lmass'][np.isnan(self.spp['lmass'])] = -99
+                self.spp['lsfr'][np.isnan(self.spp['lsfr'])] = -99
+                no_fit_filter = self.spp['chi2'] == -1
+                self.spp['ltau'][no_fit_filter]  = -99
+                self.spp['metal'][no_fit_filter] = -99
+                self.spp['lage'][no_fit_filter]  = -99
+                self.spp['Av'][no_fit_filter]    = -99
+                self.spp['lmass'][no_fit_filter] = -99
+                self.spp['lsfr'][no_fit_filter]  = -99
+                self.spp['lssfr'][no_fit_filter] = -99
+                self.spp['la2t'][no_fit_filter]  = -99
+
+                #,id,ra,dec,z_spec,z_phot,log_mass,log_sfr,Av,is_mass_clumpy,is_UV_clumpy,UV_frac_clump
+                file_path = f"{catalog_params.catalog_path}/Viz_COSMOS_deconv_clumpy_catalog.csv"
+                if os.path.exists(file_path):
+                    clump_data = astropy.io.ascii.read(file_path)
+
+                    id = np.zeros((self.count), dtype=np.int_) # pylint: disable=redefined-builtin
+                    is_mass_clumpy = np.zeros((self.count), dtype=np.bool)
+                    is_UV_clumpy = np.zeros((self.count), dtype=np.bool)
+                    UV_frac_clump = -1 * np.ones((self.count))
+
+                    for i in np.arange(len(clump_data)):
+                        indexes = np.where(self.sources['id'] == clump_data['id'][i])[0]
+                        if len(indexes) == 0:
+                            continue
+                        idx = indexes[0]
+
+                        if self.sources['z_spec'][idx] != clump_data['z_spec'][i]:
+                            raise Exception(f"z_spec doesn't match: {clump_data['id'][i]}")
+
+                        id[idx] = clump_data['id'][i]
+                        is_mass_clumpy[idx] = clump_data['is_mass_clumpy'][i] == 'True'
+                        is_UV_clumpy[idx] = clump_data['is_UV_clumpy'][i] == 'True'
+                        UV_frac_clump[idx] = clump_data['UV_frac_clump'][i]
+
+                    self.clumps = Table([
+                            id, is_mass_clumpy, is_UV_clumpy, UV_frac_clump
+                        ], names=[
+                            'id', 'is_mass_clumpy', 'is_UV_clumpy', 'UV_frac_clump',
+                        ], dtype=[
+                            np.int_, np.bool, np.bool, np.float64,
+                        ]
+                    )
+
+            case 'ZCOSMOS-BRIGHT':
+                self.source = 'ZCB'
+                self.name = 'zCOSMOS Bright'
+                self.date = datetime(2016, 1, 19)
+                self.frame = 'fk5'
+
+                file_path = f"{catalog_params.catalog_path}/zcosmos3.dat"
+                readme_path = f"{catalog_params.catalog_path}/ReadMe.txt"
+
+                self.sources = astropy.io.ascii.read(file_path, readme=readme_path, include_names=['zCOSMOS','RAdeg','DEdeg','z','CC','Imag','FileName'])
+                self.sources.rename_column('zCOSMOS', 'id')
+
+                source_filter = (self.sources['CC'] > 0) & (self.sources['z'] > 0.0)
+                self.sources = self.sources[source_filter]
+
+            case 'ZCOSMOS-DEEP':
+                self.source = 'ZCD'
+                self.name = 'zCOSMOS Deep'
+                self.date = datetime(2016, 1, 19) # Not known
+                self.frame = 'fk5'
+
+                file_path = f"{catalog_params.catalog_path}/cosmos_zspec_zgt2.txt" # zCOSMOS Deep (not public, unreleased)
+                if os.path.exists(file_path):
+                    self.sources = astropy.io.ascii.read(file_path, include_names=['ra','dec','z_spec','Q_f'])
+                    self.sources.add_column(np.arange(len(self.sources))+1, name='id', index=0)
+                    self.sources.rename_column('Q_f'  , 'z_spec_cc')
+
+            case '3D-HST':
+                self.source = '3DHST'
+                self.name = '3D-HST'
+                self.date = datetime(2014, 9, 3)
+                self.frame = 'fk5'
+
+                file_path = f"{catalog_params.catalog_path}/{catalog_params.field_file_prefix}_3dhst.v{catalog_params.field_version}.cats/Catalog/{catalog_params.field_file_prefix}_3dhst.v{catalog_params.field_version}.cat.FITS"
+                if force_tables:
+                    self.sources = Table.read(file_path)
+                else:
+                    sources_hdul = fits.open(file_path)
+                    self.sources = sources_hdul[1].data # pylint: disable=no-member
+                    self.hduls.append(sources_hdul)
+
+                file_path = f"{catalog_params.catalog_path}/{catalog_params.field_file_prefix}_3dhst_v4.1.5_catalogs/{catalog_params.field_file_prefix}_3dhst.v4.1.5.zfit.linematched.fits"
+                if force_tables:
+                    self.redshift = Table.read(file_path)
+                else:
+                    redshift_hdul = fits.open(file_path)
+                    self.redshift = redshift_hdul[1].data # pylint: disable=no-member
+                    self.hduls.append(redshift_hdul)
+
+                file_path = f"{catalog_params.catalog_path}/{catalog_params.field_file_prefix}_3dhst.v{catalog_params.field_version:.1f}.cats/Fast/{catalog_params.field_file_prefix}_3dhst.v{catalog_params.field_version:.1f}.fout.FITS"
+                if force_tables:
+                    self.spp = Table.read(file_path)
+                else:
+                    spp_hdul = fits.open(file_path)
+                    self.spp = spp_hdul[1].data # pylint: disable=no-member
+                    self.hduls.append(spp_hdul)
+
+                file_path = f"{catalog_params.catalog_path}/{catalog_params.field_file_prefix}_3dhst_v4.1.5_catalogs/{catalog_params.field_file_prefix}_3dhst.v4.1.5.linefit.linematched.fits"
+                if force_tables:
+                    self.lines = Table.read(file_path)
+                else:
+                    line_hdul = fits.open(file_path)
+                    self.lines = line_hdul[1].data # pylint: disable=no-member
+                    self.hduls.append(line_hdul)
+
+            case 'VUDS':
+                self.source = 'VUDS'
+                self.name = 'VUDS'
+                self.date = datetime(2015, 8, 12)
+                self.frame = 'fk5'
+
+                match self.field:
+                    case 'COSMOS':
+                        file_path = f"{catalog_params.catalog_path}/cosmos.dat"
+                    case 'GOODS-S':
+                        file_path = f"{catalog_params.catalog_path}/ecdfs.dat"
+
+                readme_path = f"{catalog_params.catalog_path}/ReadMe"
+
+                self.sources = astropy.io.ascii.read(file_path, readme=readme_path, include_names=['VUDS', 'RAdeg', 'DEdeg', 'zspec', 'zflags'])
+                self.sources.rename_column('VUDS', 'id')
+
+                table.add_fields(self.sources, 'index', np.arange(len(self.sources))+1)
+
+            case 'Casey':
+                self.source = 'Casey'
+                self.name = 'Casey DSFG'
+                self.date = datetime(2012, 12, 1)
+                self.frame = 'fk5'
+
+                file_path = f"{catalog_params.catalog_path}/apj449592t1_mrt.txt"
+                self.sources = astropy.io.ascii.read(file_path)
+
+                table.add_fields(self.sources, 'index', np.arange(len(self.sources))+1)
+
+                self.sources['ra'] = Angle([f"{self.sources['Name'][i][-18:-16]}h{self.sources['Name'][i][-16:-14]}m{self.sources['Name'][i][-14:-9]}s" for i in np.arange(len(self.sources))]).degree
+                self.sources['dec'] = Angle([f"{self.sources['Name'][i][-9:-6]}d{self.sources['Name'][i][-6:-4]}m{self.sources['Name'][i][-4:]}s" for i in np.arange(len(self.sources))]).degree
+
+                # Filter to selected field
+                match self.field:
+                    # U = UDS;
+                    # S = CDFS;
+                    # C = COSMOS;
+                    # L = LHN;
+                    # G = GOODS-N;
+                    # E = Elais-N1
+                    case 'UDS':
+                        field_flag = 'U'
+                    case 'COSMOS':
+                        field_flag = 'C'
+                    case 'GOODS-N':
+                        field_flag = 'G'
+                    case _:
+                        field_flag = 'X'
+
+                sources_filter = self.sources['f_zphot'] == field_flag
+                self.sources = self.sources[sources_filter]
+
+            case 'DEIMOS':
+                self.source = 'DEIMOS'
+                self.name = 'DEIMOS 10K'
+                self.date = datetime(2017, 12, 27)
+                self.frame = 'fk5'
+
+                file_path = f"{catalog_params.catalog_path}/deimos_redshifts.tbl"
+                self.sources = astropy.io.ascii.read(file_path)
+
+                table.add_fields(self.sources, 'index', np.arange(len(self.sources))+1)
+
+                source_filter = (self.sources['Remarks'] != 'star') & ~np.isnan(self.sources['zspec'] > 0.0) & (self.sources['zspec'] > 0.0)
+                self.sources = self.sources[source_filter]
+
+            case 'MOSDEF':
+                self.source = 'MOSDEF'
+                self.name = 'MOSDEF'
+                self.date = datetime(2018, 3, 11)
+                self.frame = 'fk5'
+
+                file_path = f"{catalog_params.catalog_path}/mosdef_zcat.final_slitap.fits"
+                sources_hdul = fits.open(file_path)
+                self.sources = sources_hdul[1].data # pylint: disable=no-member
+
+                # Filter to selected field
+                sources_filter = (self.sources['FIELD'] == self.field) & (self.sources['ID_V4'] >= 0) & (self.sources['Z_MOSFIRE'] >= 0.0)
+                self.sources = self.sources[sources_filter]
+
+                # Remove Duplicates
+                dup_filter = np.zeros((len(self.sources)), dtype=np.bool)
+                unique_ids, counts = np.unique(self.sources['ID_V4'], return_counts=True)
+                dupped_ids = unique_ids[counts > 1]
+
+                for i in np.arange(len(dupped_ids)):
+                    dup_id = dupped_ids[i]
+                    current_filter = self.sources['ID_V4'] == dup_id
+                    dup_filter[current_filter] = True
+                    keep_idx = np.argmax(current_filter)
+                    dup_filter[keep_idx] = False
+                    self.sources['z_MOSFIRE'][keep_idx] = np.mean(self.sources['z_MOSFIRE'][current_filter])
+
+                self.sources = self.sources[~dup_filter]
+
+                # Emission Lines (NOTE: these are not line matched, so do so manually)
+                file_path = f"{catalog_params.catalog_path}/linemeas_nocor.fits"
+                lines_hdul = fits.open(file_path)
+                lines = lines_hdul[1].data # pylint: disable=no-member
+
+                line_prefixes = get_MOSDEF_line_prefixes()
+                empty_idx = np.argmax(lines['ID'] == -9999) # HACK: use the first row we're going to skip anyway
+                lines[empty_idx] = np.zeros((1), dtype=lines.columns.dtype)[0]
+                line_indexes = empty_idx * np.ones((len(self.sources)), dtype=np.int_)
+                indexes = np.arange(len(lines))
+                for i in np.arange(len(self.sources)):
+                    row_filter = (lines['FIELD'] == self.sources['FIELD'][i]) & (lines['ID'] == self.sources['ID_V4'][i])
+                    num_rows = np.sum(row_filter)
+                    keep_idx = np.argmax(row_filter) # first row
+
+                    if num_rows == 0:
+                        continue
+                    elif num_rows > 1:
+                        for j in np.arange(len(line_prefixes)):
+                            flux_field_name = f"{line_prefixes[j]}_PreferredFlux"
+                            error_field_name = f"{line_prefixes[j]}_PreferredFlux_err"
+                            sky_flag_field_name = f"{line_prefixes[j]}_slflag"
+
+                            fluxes = lines[flux_field_name][row_filter]
+                            errors = lines[error_field_name][row_filter]
+                            slflags = lines[sky_flag_field_name][row_filter]
+
+                            value_filter = (fluxes > 0.0) & (errors > 0.0)
+                            if np.sum(value_filter) > 0:
+                                weights = 1/np.power(errors[value_filter], 2)
+                                lines[keep_idx][flux_field_name] = np.average(fluxes[value_filter], weights=weights)
+                                lines[keep_idx][error_field_name] = np.sqrt(1/np.sum(weights))
+                                lines[keep_idx][sky_flag_field_name] = min(slflags[value_filter])
+
+                    line_indexes[i] = keep_idx
+
+                self.lines = lines[line_indexes]
+
+                self.hduls = [sources_hdul, lines_hdul]
+
+            case 'FMOS':
+                self.source = 'FMOS'
+                self.name = 'FMOS-COSMOS'
+                self.date = datetime(2019, 1, 25)
+                self.frame = 'fk5'
+
+                file_path = f"{catalog_params.catalog_path}/fmos-cosmos_catalog_2019.fits"
+                sources_hdul = fits.open(file_path)
+                self.sources = sources_hdul[1].data # pylint: disable=no-member
+                self.lines = self.sources # copy of sources to access emission line data
+                self.lines_is_copy = True
+                self.hduls = [sources_hdul]
+
+            case 'KMOS3D':
+                self.source = 'KMOS3D'
+                self.name = 'KMOS3D'
+                self.date = datetime(2019, 7, 12)
+                self.frame = 'fk5'
+
+                file_path = f"{catalog_params.catalog_path}/k3d_fnlsp_table_v3.fits"
+                sources_hdul = fits.open(file_path)
+                self.sources = sources_hdul[1].data # pylint: disable=no-member
+
+                file_path = f"{catalog_params.catalog_path}/k3d_fnlsp_table_hafits_v3.fits"
+                lines_hdul = fits.open(file_path)
+                self.lines = lines_hdul[1].data # pylint: disable=no-member
+
+                # Filter to selected field
+                match self.field:
+                    case 'COSMOS':
+                        field_code = 'COS'
+                    case 'GOODS-S':
+                        field_code = 'GS'
+                    case 'UDS':
+                        field_code = 'U'
+
+                sources_filter = self.sources['FIELD'] == field_code
+                self.sources = self.sources[sources_filter]
+
+                sources_filter = self.lines['FIELD'] == field_code
+                self.lines = self.lines[sources_filter]
+
+                # Sources and Lines are line-matched but sources has more objects, drop them
+                if len(self.sources) > len(self.lines):
+                    self.sources = self.sources[0:len(self.lines)]
+
+                self.spp = self.sources # copy of sources to spp data
+                self.spp_is_copy = True
+
+                self.hduls = [sources_hdul, lines_hdul]
+
+            case 'C3R2':
+                self.source = 'C3R2'
+                self.name = 'C3R2 DR1+DR2+DR3'
+                self.date = datetime(2021, 6, 18)
+                self.frame = 'fk5'
+
+                file_path = f"{catalog_params.catalog_path}/c3r2_DR1+DR2_2019april11.txt"
+                self.sources12 = astropy.io.ascii.read(file_path)
+
+                file_path = f"{catalog_params.catalog_path}/C3R2-DR3-18june2021.txt"
+                self.sources3 = astropy.io.ascii.read(file_path)
+
+                self.sources = vstack([self.sources12, self.sources3])
+
+                source_filter = np.char.startswith(self.sources['ID'], self.field)
+                self.sources = self.sources[source_filter]
+
+                table.add_fields(self.sources, 'index', np.arange(len(self.sources))+1)
+
+                self.sources['ra'] = Angle([f"{self.sources['RAh'][i]}h{self.sources['RAm'][i]}m{self.sources['RAs'][i]}s" for i in np.arange(len(self.sources))]).degree
+                self.sources['dec'] = Angle([f"{(self.sources['DE-'][i] if self.sources['DE-'][i] != '' else '+')}{self.sources['DEd'][i]}d{self.sources['DEm'][i]}m{self.sources['DEs'][i]}s" for i in np.arange(len(self.sources))]).degree
+
+            case 'LEGAC':
+                self.source = 'LEGAC'
+                self.name = 'LEGA-C'
+                self.date = datetime(2021, 8, 2)
+                self.frame = 'fk5'
+
+                file_path = f"{catalog_params.catalog_path}/legac_dr3_cat.fits"
+                sources_hdul = fits.open(file_path)
+                self.sources = sources_hdul[1].data # pylint: disable=no-member
+                self.lines = self.sources # copy to access emission line data
+                self.lines_is_copy = True
+                self.hduls = [sources_hdul]
+
+            case 'HSCSSP':
+                self.source = 'HSCSSP'
+                self.name = 'HSC SSP Public'
+                self.date = datetime(2000, 1, 1) # So all other z-specs of the same file take precidence (since this is a cross-matched catalog)
+                self.frame = 'fk5'
+
+                match self.field:
+                    case 'AEGIS':
+                        file_path = f"{catalog_params.catalog_path}/EGS-specz-v2.3.fits"
+                    case 'COSMOS':
+                        file_path = f"{catalog_params.catalog_path}/COSMOS-specz-v2.8-public.fits"
+
+                sources_hdul = fits.open(file_path)
+                self.sources = sources_hdul[1].data # pylint: disable=no-member
+                self.hduls = [sources_hdul]
+
+                self.sources = fits.FITS_rec.from_columns(self.sources.columns.add_col(fits.Column(name='index', array=np.arange(len(self.sources))+1, format='K')))
+
+            case 'DESI':
+                self.source = 'DESI'
+                self.name = 'DESI EDR'
+                self.date = datetime(2023, 6, 9)
+                self.frame = 'icrs'
+
+                file_path = f"{catalog_params.catalog_path}/edr_galaxy_stellarmass_lineinfo_v1.0.fits"
+                sources_hdul = fits.open(file_path)
+                self.sources = sources_hdul[1].data # pylint: disable=no-member
+                self.spp = self.sources # copy to access spp line data
+                self.spp_is_copy = True
+                self.lines = self.sources # copy to access emission line data
+                self.lines_is_copy = True
+                self.hduls = [sources_hdul]
+
+                self.sources = fits.FITS_rec.from_columns(self.sources.columns.add_col(fits.Column(name='index', array=np.arange(len(self.sources))+1, format='K')))
+
+                kron_radius = np.zeros((len(self.sources)))
+                value_filter = (self.sources['SERSIC'] > 0.0) & (self.sources['SHAPE_R'] > 0.0)
+                kron_radius[value_filter] = compute_kron_radius(self.sources['SERSIC'][value_filter], re=self.sources['SHAPE_R'][value_filter])
+                self.sources = fits.FITS_rec.from_columns(self.sources.columns.add_col(fits.Column(name='kron_radius', array=kron_radius, format='D')))
+
+            case 'UVISTA-PLUS':
+                catalog_file_path = f"{catalog_params.catalog_path}/UVISTA-PLUS_COSMOS.pkl.gz"
+                with open(catalog_file_path, 'rb') as f:
+                    loaded_data = load(f)
+                    self.__dict__.update(loaded_data.__dict__)
+
+                self.params = catalog_params
+                self.source = 'UVISTAP'
+
+            case '3D-HST-PLUS':
+                catalog_file_path = f"{catalog_params.catalog_path}/3D-HST-PLUS_{catalog_params.field}.pkl.gz"
+                with open(catalog_file_path, 'rb') as f:
+                    loaded_data = load(f)
+                    self.__dict__.update(loaded_data.__dict__)
+
+                self.params = catalog_params
+                self.source = '3DHSTP'
+
+        if not table.has_field(self, 'count'):
+            self.count = len(self.sources)
+        if not table.has_field(self, 'all_sources'):
+            self.all_sources = [self.source]
+        if not table.has_field(self, 'all_sources_date'):
+            self.all_sources_date = [self.date]
+
+        if table.has_field(self, 'spp') and isinstance(self.spp, Table) and not table.has_field(self.spp, 'spp_flag'):
+            _, spp_flag, _ = get_spp(self)
+            table.add_fields(self.spp, 'spp_flag', spp_flag)
+
+        if region is not None:
+            if region_wcs is None:
+                if table.has_field(self.params, 'wcs'):
+                    region_wcs = self.params.wcs
+                else:
+                    region_wcs = WCS(naxis=2)                                  # 2D WCS for an image
+                    region_wcs.wcs.crpix = [180, 180]*3600                     # Reference pixel (center of the image)
+                    region_wcs.wcs.cdelt = np.array([-0.00027778, 0.00027778]) # Pixel scale in degrees (i.e., 1 arcsec/pixel)
+                    region_wcs.wcs.crval = [180.0, 0.0]                        # Reference world coordinate (RA, Dec in degrees)
+                    region_wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]            # Projection type (TAN for tangent-plane)
+
+            sources_filter = region.contains(SkyCoord(ra=self.sources[get_ra_field(self)], dec=self.sources[get_dec_field(self)], unit=(u.degree, u.degree)), region_wcs)
+
+            self.sources = self.sources[sources_filter]
+            self.count = len(self.sources)
+
+            if table.has_field(self, 'redshift'):
+                if self.redshift_is_copy:
+                    self.redshift = self.sources
+                else:
+                    self.redshift = self.redshift[sources_filter]
+
+            if table.has_field(self, 'spp'):
+                if self.spp_is_copy:
+                    self.spp = self.sources
+                else:
+                    self.spp = self.spp[sources_filter]
+
+            if table.has_field(self, 'lines'):
+                if self.lines_is_copy:
+                    self.lines = self.sources
+                else:
+                    self.lines = self.lines[sources_filter]
+
+            if table.has_field(self, 'clumps'):
+                if self.clumps_is_copy:
+                    self.clumps = self.sources
+                else:
+                    self.clumps = self.clumps[sources_filter]
+
+    def close(self):
+        for i in np.arange(len(self.hduls)):
+            self.hduls[i].close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+
+    @property
+    def id_field(self):
+        return get_id_field(self)
+
+    @property
+    def ra_field(self):
+        return get_ra_field(self)
+
+    @property
+    def dec_field(self):
+        return get_dec_field(self)
+
+    def get_index(self, ids):
+        if np.size(ids) <= 1:
+            return np.where(self.sources[self.id_field] == ids)[0][0]
+        else:
+            return np.where(np.isin(self.sources[self.id_field], ids))[0]
 
 #endregion
 
@@ -734,13 +760,13 @@ def get_has_flux(catalog_data):
 #region Flux Radius Info
 
 def get_flux_radius_sources():
-    return np.array(['UVISTA','3DHST','DESI'])
+    return np.array(['UVISTA','3DHST','DESI','UVISTAP','3DHSTP'])
 
 def get_flux_radius_field(catalog_data_or_params):
     match catalog_data_or_params.catalog:
-        case 'UVISTA':
+        case 'UVISTA' | 'UVISTA-PLUS':
             return 'K_Kron'
-        case '3D-HST':
+        case '3D-HST' | '3D-HST-PLUS':
             return 'kron_radius'
         case 'DESI':
             return 'kron_radius'
@@ -751,11 +777,17 @@ def get_has_flux_radius(catalog_data):
 
 def get_flux_radius_factor(catalog_data):
     match catalog_data.source:
-        case 'UVISTA' | '3DHST':
+        case 'UVISTA' | '3DHST' | 'UVISTAP' | '3DHSTP':
             return catalog_data.params.pixel_scale[1].value * 3600.0 # pixels -> arcsec
         case 'DESI':
             return 1.0 # arcsec
     return 1.0
+
+def get_is_flux_radius_kron(catalog_data):
+    flux_radius_field = get_flux_radius_field(catalog_data)
+    if flux_radius_field is None:
+        return False
+    return 'kron' in flux_radius_field.lower()
 
 #endregion
 
@@ -1321,13 +1353,16 @@ def get_redshift_any(catalog_data, idx_or_filter = None, force_catalog_name = No
 #region SPP Info
 
 def get_spp_sources():
-    return np.array(['UVISTA','3DHST','KMOS3D','DESI'])
+    return np.array(['UVISTA','3DHST','KMOS3D','DESI','UVISTAP','3DHSTP'])
 
 def get_has_spp(catalog_data):
     return np.any(get_spp_sources() == catalog_data.source)
 
+def get_spp_names():
+    return np.array(['lmass', 'lsfr', 'Av', 'chi2'])
+
 def get_spp(catalog_data, idx_or_filter = None, suffix = None):
-    spp_names = ['lmass', 'lsfr', 'Av', 'chi2']
+    spp_names = get_spp_names()
     num_spp_properties = len(spp_names)
 
     if idx_or_filter is None:
@@ -1437,7 +1472,7 @@ def get_spp(catalog_data, idx_or_filter = None, suffix = None):
     else:
         spp = np.hstack([spp, z_spp.reshape(-1,1)])
 
-    spp_names.append('z_spp')
+    spp_names = np.append(spp_names, 'z_spp')
     num_spp_properties += 1
 
     ##############################
@@ -1530,12 +1565,24 @@ def get_spp(catalog_data, idx_or_filter = None, suffix = None):
 
     return spp, spp_flags, spp_names
 
+def get_spp_values(catalog_data, ids_or_filter):
+    spp, _, spp_names = get_spp(catalog_data, ids_or_filter)
+
+    lmass_idx = np.where(spp_names == 'lmass')[0]
+    lsfr_idx = np.where(spp_names == 'lsfr')[0]
+    Av_idx = np.where(spp_names == 'Av')[0]
+
+    if np.ndim(spp) == 1:
+        return spp[lmass_idx], spp[lsfr_idx], spp[Av_idx]
+    else:
+        return spp[:,lmass_idx], spp[:,lsfr_idx], spp[:,Av_idx]
+
 #endregion
 
 #region Lines Info
 
 def get_line_sources():
-    return np.array(['3DHST', 'MOSDEF', 'FMOS', 'KMOS3D', 'LEGAC', 'DESI'])
+    return np.array(['3DHST', 'MOSDEF', 'FMOS', 'KMOS3D', 'LEGAC', 'DESI','3DHSTP','UVISTAP'])
 
 def get_line_names():
     return np.array(['SIIb', 'SIIa', 'NIIb', 'Ha', 'NIIa', 'OIIIb', 'OIIIa', 'Hb', 'OIIb', 'OIIa'])
@@ -1573,21 +1620,10 @@ def get_lines(catalog_data, idx_or_filter = None, suffix = None):
 
     c = 299792.458 # km/s
     rest_lambda = sky.get_emission_line_rest_wavelengths()
-    line_lambdas = sky.get_vacuum_to_air_wavelength([rest_lambda.SIIb, rest_lambda.SIIa, rest_lambda.NIIb, rest_lambda.Ha, rest_lambda.NIIa, rest_lambda.OIIIb, rest_lambda.OIIIa, rest_lambda.Hb, rest_lambda.OIIb, rest_lambda.OIIa])
+    line_lambdas = sky.get_vacuum_to_air_wavelength([rest_lambda[line_name] for line_name in line_names])
     field_names = np.empty((num_lines, num_line_properties), dtype="<U30")
     field_unit_factors = np.ones((num_lines, num_line_properties))
     aperature_correction_fields = np.empty((num_lines), dtype="<U30")
-
-    # SIIb  = 6732.67 # ansgrom
-    # SIIa  = 6718.29 # angstrom
-    # NIIb  = 6585.27  # angstrom
-    # Ha    = 6564.610 # angstrom
-    # NIIa  = 6549.86  # angstrom
-    # OIIIb = 5008.240 # angstrom
-    # OIIIa = 4960.295 # angstrom
-    # Hb    = 4862.680 # angstrom
-    # OIIb  = 3729.875 # angstrom
-    # OIIa  = 3727.092 # angstrom
 
     match catalog_data.catalog:
         case '3D-HST':
@@ -1776,13 +1812,43 @@ def get_lines(catalog_data, idx_or_filter = None, suffix = None):
                     line_flags[value_filter, i] = 9
 
             case 'UVISTA-PLUS':
-                line_flags[:,i] = lines_table[f"flag_{line_suffixes[i]}"][idx_or_filter]
+                if N == 1:
+                    line_flags[i] = lines_table[f"flag_{line_suffixes[i]}"][idx_or_filter]
+                else:
+                    line_flags[:,i] = lines_table[f"flag_{line_suffixes[i]}"][idx_or_filter]
 
     if np.ndim(lines) == 2:
         lines = np.array([lines])
         line_flags = np.array([line_flags])
 
     return lines, line_flags, line_names
+
+def get_line_flux(catalog_data, line_name, idx_or_filter = None, suffix = None, nan_if_empty=False):
+    match line_name:
+        case 'SII':
+            retvals  = get_line_flux(catalog_data, 'SIIa', idx_or_filter, suffix, nan_if_empty=False) \
+                     + get_line_flux(catalog_data, 'SIIb', idx_or_filter, suffix, nan_if_empty=False)
+        case 'NII':
+            retvals  = get_line_flux(catalog_data, 'NIIa', idx_or_filter, suffix, nan_if_empty=False) \
+                     + get_line_flux(catalog_data, 'NIIb', idx_or_filter, suffix, nan_if_empty=False)
+        case 'OIII':
+            retvals  = get_line_flux(catalog_data, 'OIIIa', idx_or_filter, suffix, nan_if_empty=False) \
+                     + get_line_flux(catalog_data, 'OIIIb', idx_or_filter, suffix, nan_if_empty=False)
+        case 'OII':
+            retvals  = get_line_flux(catalog_data, 'OIIa', idx_or_filter, suffix, nan_if_empty=False) \
+                     + get_line_flux(catalog_data, 'OIIb', idx_or_filter, suffix, nan_if_empty=False)
+        case _:
+            lines, _, line_names = get_lines(catalog_data, idx_or_filter, suffix)
+            line_idx = np.where(line_names == line_name)[0][0]
+            if np.size(line_idx) == 1:
+                retvals = lines[:,line_idx,0]
+            else:
+                retvals = np.zeros((np.size(lines,0)))
+
+    if nan_if_empty:
+        retvals[retvals == 0.0] = np.nan
+
+    return retvals
 
 def get_snr(f, e):
     snr = np.zeros((len(e)))
@@ -2331,7 +2397,7 @@ def flatten_galaxy_data(catalog_data):
 
 #region Utilities
 
-def _compute_kron_radius(n, r=1e10, re=1):
+def compute_kron_radius(n, r=1e10, re=1):
     # see https://arxiv.org/pdf/astro-ph/9911078.pdf Eq. 18
     bn = 2*n - 1/3 + 4/405/n + 46/25515/n**2 + 131/1148175/n**3 - 2194697/30690717750/n**4
 
@@ -2340,5 +2406,122 @@ def _compute_kron_radius(n, r=1e10, re=1):
     krad = re / np.power(bn, n) * (gamma(3*n)*gammainc(3*n, x)) / (gamma(2*n)*gammainc(2*n, x))
 
     return krad
+
+def compute_flux_Ha_from_SFR(sfr, Av, z, null_if_empty=False):
+    # NOTE: sfr is in Msun/yr NOT log10(Msun/yr)
+
+    return_value = np.ndim(sfr) == 0
+    sfr = np.asarray(sfr).flatten()
+    Av = np.asarray(Av).flatten()
+    z = np.asarray(z).flatten()
+
+    # From Kennicutt (1998) ApJ 498, 541
+    # SFR = 7.9e-42 * L(Hα)                                 [Msun/yr]
+    # L(Hα) = 4π dL^2 * Fcorr(Hα)                           [erg/s]
+    # dL(z) = luminosity distance at  z                     [cm]
+    # Fcorr(Hα) = Fobs(Hα) * 10^(0.4*A(Hα))                 [erg/s/cm^2]
+    # A(Hα) = Av * R_Hα                                     [mag]
+    # R(1/Hα) = extinction curve at Hα                      [factor]
+    # Fobs(Ha) = SFR / 7.9e-42 / 4π dL^2 / 10^(0.4*A(Ha))   [erg/s/cm^2]
+
+    extinction_model = F99(Rv=3.1)
+    lambda_Ha_rest = sky.get_emission_line_rest_wavelengths()['Ha']
+    R_Ha =  extinction_model(1/(lambda_Ha_rest/1e4*u.micron))
+    A_Ha = Av * R_Ha
+
+    cosmo = FlatLambdaCDM(H0=70, Om0=0.3)
+    dL = cosmo.luminosity_distance(z)
+
+    flux_Ha = sfr / 7.9e-42 / (4*np.pi*np.power(dL.to(u.cm).value, 2)) / np.power(10, 0.4*A_Ha) # erg/s/cm^2
+
+    if null_if_empty:
+        flux_Ha[flux_Ha == 0] = np.nan
+
+    if return_value:
+        return flux_Ha[0]
+    else:
+        return flux_Ha
+
+def calculate_flux_Ha_from_flux_Hb(flux_Hb, Av, null_if_empty=False):
+    return_value = np.ndim(flux_Hb) == 0
+    flux_Hb = np.asarray(flux_Hb).flatten()
+    Av = np.asarray(Av).flatten()
+
+    rest_lambdas = sky.get_emission_line_rest_wavelengths()
+    extinction_model = F99(Rv=3.1)
+
+    lambda_Ha_rest = rest_lambdas['Ha']
+    R_Ha =  extinction_model(1/(lambda_Ha_rest/1e4*u.micron))
+    A_Ha = Av * R_Ha
+
+    lambda_Hb_rest = rest_lambdas['Hb']
+    R_Hb =  extinction_model(1/(lambda_Hb_rest/1e4*u.micron))
+    A_Hb = Av * R_Hb
+
+    # Assume Balmer decrement of 2.86
+    flux_Ha = 2.86 * flux_Hb * np.power(10, 0.4*(A_Hb-A_Ha))
+
+    if null_if_empty:
+        flux_Ha[flux_Ha == 0] = np.nan
+
+    if return_value:
+        return flux_Ha[0]
+    else:
+        return flux_Ha
+
+def calculate_flux_Ha_from_flux_OIII(flux_OIII, Av, null_if_empty=False):
+    return_value = np.ndim(flux_OIII) == 0
+    flux_OIII = np.asarray(flux_OIII).flatten()
+    Av = np.asarray(Av).flatten()
+
+    rest_lambdas = sky.get_emission_line_rest_wavelengths()
+    extinction_model = F99(Rv=3.1)
+
+    lambda_Ha_rest = rest_lambdas['Ha']
+    R_Ha =  extinction_model(1/(lambda_Ha_rest/1e4*u.micron))
+    A_Ha = Av * R_Ha
+
+    lambda_OII_rest = np.mean([rest_lambdas['OIIIa'], rest_lambdas['OIIIb']])
+    R_OIII =  extinction_model(1/(lambda_OII_rest/1e4*u.micron))
+    A_OIII = Av * R_OIII
+
+    # Assume flux_OIII_corr / flux_OIII_corr ~ 4 and Balmer decrement of 2.86
+    flux_Ha = 2.86 / 4.0 * flux_OIII * np.power(10, 0.4*(A_OIII-A_Ha))
+
+    if null_if_empty:
+        flux_Ha[flux_Ha == 0] = np.nan
+
+    if return_value:
+        return flux_Ha[0]
+    else:
+        return flux_Ha
+
+def calculate_flux_Ha_from_flux_OII(flux_OII, Av, null_if_empty=False):
+    return_value = np.ndim(flux_OII) == 0
+    flux_OII = np.asarray(flux_OII).flatten()
+    Av = np.asarray(Av).flatten()
+
+    rest_lambdas = sky.get_emission_line_rest_wavelengths()
+    extinction_model = F99(Rv=3.1)
+
+    lambda_Ha_rest = rest_lambdas['Ha']
+    R_Ha =  extinction_model(1/(lambda_Ha_rest/1e4*u.micron))
+    A_Ha = Av * R_Ha
+
+    lambda_OII_rest = np.mean([rest_lambdas['OIIa'], rest_lambdas['OIIb']])
+    R_OII =  extinction_model(1/(lambda_OII_rest/1e4*u.micron))
+    A_OII = Av * R_OII
+
+    # Assume flux_Ha_corr ~ flux_OII_corr
+    flux_Ha = 1.0 * flux_OII * np.power(10, 0.4*(A_OII-A_Ha))
+
+    if null_if_empty:
+        flux_Ha[flux_Ha == 0] = np.nan
+
+    if return_value:
+        return flux_Ha[0]
+    else:
+        return flux_Ha
+
 
 #endregion
