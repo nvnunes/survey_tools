@@ -1,1 +1,1 @@
-__all__ = ['fit', 'plot', 'rotator', 'table']
+__all__ = ['files', 'fit', 'plot', 'rotator', 'table']

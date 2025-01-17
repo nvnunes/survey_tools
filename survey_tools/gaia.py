@@ -8,7 +8,7 @@ import os
 from contextlib import redirect_stderr, redirect_stdout
 import numpy as np
 import astropy.units as u
-import astroquery
+from astroquery.gaia import Gaia, GaiaClass
 import requests
 from survey_tools import healpix
 
@@ -71,11 +71,11 @@ SELECT COUNT(*)
 
     try:
         if verbose:
-            job = astroquery.gaia.GaiaClass(verbose=True).launch_job_async(query, verbose=True)
+            job = GaiaClass(verbose=True).launch_job_async(query, verbose=True)
         else:
             with open(os.devnull, 'w') as fnull: # pylint: disable=unspecified-encoding
                 with redirect_stdout(fnull), redirect_stderr(fnull):
-                    job = astroquery.gaia.GaiaClass().launch_job_async(query)
+                    job = Gaia.launch_job_async(query)
     except requests.exceptions.HTTPError as e: # pylint: disable=no-member
         if str(e) == 'OK':
             raise GaiaException('Archive is likely down for maintenance') from e
@@ -110,11 +110,11 @@ SELECT SOURCE_ID AS gaia_id
 
     try:
         if verbose:
-            job = astroquery.gaia.GaiaClass(verbose=True).launch_job_async(query, verbose=True)
+            job = GaiaClass(verbose=True).launch_job_async(query, verbose=True)
         else:
             with open(os.devnull, 'w') as fnull: # pylint: disable=unspecified-encoding
                 with redirect_stdout(fnull), redirect_stderr(fnull):
-                    job = astroquery.gaia.GaiaClass().launch_job_async(query)
+                    job = Gaia.launch_job_async(query)
     except requests.exceptions.HTTPError as e: # pylint: disable=no-member
         if str(e) == 'OK':
             raise GaiaException('Archive is likely down for maintenance') from e
