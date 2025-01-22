@@ -56,6 +56,23 @@ def _get_default_image_path():
 
 #region Parameters
 
+def get_image_source(catalog_name):
+    match catalog_name:
+        case 'UVISTA' | 'UVISTA-PLUS':
+            return 'UVISTA DR6'
+        case '3D-HST' | '3D-HST-PLUS':
+            return '3D-HST v4.0'
+        case _:
+            return catalog_name
+
+def get_image_filters(catalog_name, field_name = None): # pylint: disable=unused-argument
+    match catalog_name:
+        case 'UVISTA' | 'UVISTA-PLUS':
+            return ['Y', 'J', 'H', 'K', 'NB118']
+        case '3D-HST' | '3D-HST-PLUS':
+            return ['F125W', 'F140W', 'F160W']
+    return None
+
 def get_params(catalog_name, field_name = None, filter_name = None):
     catalog_params = StructType()
     catalog_params.catalog = catalog_name
@@ -81,16 +98,23 @@ def get_params(catalog_name, field_name = None, filter_name = None):
                         catalog_params.field_version = 4.1
 
         if filter_name is not None:
+            catalog_params.catalog_image_epoch = None
+
             match catalog_name:
                 case 'UVISTA' | 'UVISTA-PLUS':
                     catalog_params.catalog_image_folder = f"{catalog_params.catalog_image_path}/UVISTA"
                     match filter_name:
+                        case 'Y':
+                            catalog_params.catalog_image_file = 'UVISTA_Y_12_01_24_allpaw_skysub_015_dr6_rc_v1.fits'
                         case 'J':
-                            catalog_params.catalog_image_file = 'ADP.2024-05-27T16_34_32.521.fits'
+                            catalog_params.catalog_image_file = 'UVISTA_J_12_01_24_allpaw_skysub_015_dr6_rc_v1.fits'
                         case 'H':
-                            catalog_params.catalog_image_file = 'ADP.2024-05-27T16_34_32.523.fits'
-                        case 'K':
-                            catalog_params.catalog_image_file = 'ADP.2024-05-27T16_34_32.525.fits'
+                            catalog_params.catalog_image_file = 'UVISTA_H_12_01_24_allpaw_skysub_015_dr6_rc_v1.fits'
+                        case ['K', 'Ks']:
+                            catalog_params.catalog_image_file = 'UVISTA_Ks_12_01_24_allpaw_skysub_015_dr6_rc_v1.fits'
+                        case 'NB118':
+                            catalog_params.catalog_image_file = 'UVISTA_NB118_12_01_24_allpaw_skysub_015_dr6_rc_v1.fits'
+                    catalog_params.catalog_image_epoch = 2016.34
                 case '3D-HST' | '3D-HST-PLUS':
                     catalog_params.catalog_image_folder = f"{catalog_params.catalog_image_path}/3D-HST"
                     catalog_params.catalog_image_file = f"{catalog_params.field_file_prefix}_3dhst.v4.0.{filter_name}_orig_sci.fits"

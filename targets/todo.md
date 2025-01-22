@@ -1,10 +1,5 @@
 # Project Overview
 
-### Miscellaneous
-1. Weight sky transmission across gaussian profile
-1. Take z_unc into account when rejecting skylines (estimate probability of collision, cut on probability)
-1. Use segmentation map and pixel scale to estimate area for SB instead of using flux_radius (keep both way as current way better for filtering catalog to find sources)
-
 ### Phase 1
 1. DONE Specify single target providing target details including line(s) of interest
 1. DONE Export table with gathered information
@@ -38,22 +33,24 @@
     - DONE C3R2
     - DONE LEGAC
     - DONE DESI
-1. Plot cut-outs and finder-chart for selected target
-    - Based on matched catalog imaging
-    - Additional downloaded imaging
-    - Web-service for COSMOS
-1. Plan IFU observation
-    - Configure IFU properties
-    - Compute segmentation map of source (throw error if too many)
-    - Find best orientation (position angle) for IFU
-    - Plot IFU showing spaxels
+1. DONE Plot cut-outs and finder-chart for selected target
+    - DONE Based on matched catalog imaging
+    - DONE Additional downloaded imaging
+1. DONE Plan IFU observation
+    - DONE Configure IFU properties
+    - DONE Compute segmentation map of source
+    - DONE Plot IFU showing spaxels
 1. Other:
     - Add support for loading z_unc from catalog
     - Add support for loading dispersion/FWHM from catalog
     - Add support for mapping different column names
     - Match against catalogs by RA/Dec to identify source when no id
+    - Find optimal IFU position and position angle
     - Add support for plotting additional 2D spectra
     - Add support for plotting KMOS3D data cubes
+    - Use segmentation map and pixel scale to estimate area for SB instead of using flux_radius (keep both way as current way better for filtering catalog to find sources)
+    - Weight sky transmission across gaussian profile
+    - Take z_unc into account when rejecting skylines (estimate probability of collision, cut on probability)
 
 ### Phase 2
 1. Select targets from catalog
