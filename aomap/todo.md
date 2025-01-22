@@ -9,8 +9,11 @@ DONE Phase 0:
 1. DONE Optionally limit processing based on HEALpix level and pix
 
 Phase 1:
-1. Load dust map and compute extinction per inner and outer pixels
+1. Load dust map and compute extinction per inner pixel
 1. Optionally draw contours of extinction on map
+1. Load Zodiacal light model and compute emission per inner pixel
+   (https://cosmoglobe.github.io/zodipy/)
+1. Optionally draw contours of emission on map
 1. Load regions covered by important surveys:
     - Euclid EWS
     - Important extra-galactic fields
@@ -23,10 +26,12 @@ Phase 1:
         = try increase (corresponding lower % of healpix) if:
             - nothing found (i.e. trade-off)
             - remaining healpix at unreasonably low galactic latitude
-    - reasonably low extinction
+    - reasonably low dust extinction
+    - reasonably low zodiacal light emission
 1. Optionally limit processing based on:
     - stellar density
     - dust extinction
+    - zodiacal light emission
     - region
 
 Phase 2:

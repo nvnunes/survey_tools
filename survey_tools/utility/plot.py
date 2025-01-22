@@ -60,15 +60,15 @@ def get_plot_colours(plot_mode, use_accessible_colours = True):
 
     return plot_colours
 
-def create_plot(plot_mode='notebook', subplots=None, figsize=None, title=None, projection=None, width_ratios=None, height_ratios=None):
+def create_plot(plot_mode='notebook', subplots=None, figsize=None, title=None, projection=None, width_ratios=None, height_ratios=None, **kwargs):
     if plot_mode == 'latex':
         if projection is not None:
-            fig, ax = plt.subplots(subplot_kw=dict(projection=projection))
+            fig, ax = plt.subplots(subplot_kw=dict(projection=projection), **kwargs)
         else:
-            fig, ax = plt.subplots()
+            fig, ax = plt.subplots(**kwargs)
     else:
         if subplots is None:
-            fig = plt.figure(figsize=figsize)
+            fig = plt.figure(figsize=figsize, **kwargs)
 
             if title is not None:
                 plt.title(title)
@@ -78,7 +78,11 @@ def create_plot(plot_mode='notebook', subplots=None, figsize=None, title=None, p
             else:
                 ax = plt.subplot(1, 1, 1)
         else:
-            subplot_kw=dict()
+            if len(kwargs) > 0:
+                subplot_kw = kwargs
+            else:
+                subplot_kw=dict()
+
             if projection is not None:
                 subplot_kw['projection'] = projection
 
