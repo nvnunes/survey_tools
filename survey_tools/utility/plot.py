@@ -60,20 +60,36 @@ def get_plot_colours(plot_mode, use_accessible_colours = True):
 
     return plot_colours
 
-def create_plot(plot_mode, title = None, projection = None):
+def create_plot(plot_mode='notebook', subplots=None, figsize=None, title=None, projection=None, width_ratios=None, height_ratios=None, **kwargs):
     if plot_mode == 'latex':
         if projection is not None:
-            fig, ax = plt.subplots(subplot_kw=dict(projection=projection))
+            fig, ax = plt.subplots(subplot_kw=dict(projection=projection), **kwargs)
         else:
-            fig, ax = plt.subplots()
+            fig, ax = plt.subplots(**kwargs)
     else:
-        fig = plt.figure()
-        if title is not None:
-            plt.title(title)
-        if projection is not None:
-            ax = plt.subplot(1,1,1, projection=projection)
+        if subplots is None:
+            fig = plt.figure(figsize=figsize, **kwargs)
+
+            if title is not None:
+                plt.title(title)
+
+            if projection is not None:
+                ax = plt.subplot(1, 1, 1, projection=projection)
+            else:
+                ax = plt.subplot(1, 1, 1)
         else:
-            ax = plt.subplot(1,1,1)
+            if len(kwargs) > 0:
+                subplot_kw = kwargs
+            else:
+                subplot_kw=dict()
+
+            if projection is not None:
+                subplot_kw['projection'] = projection
+
+            fig, ax = plt.subplots(*subplots, figsize=figsize, height_ratios=height_ratios, width_ratios=width_ratios, subplot_kw=subplot_kw)
+
+            if title is not None:
+                fig.suptitle(title)
 
     return fig, ax
 

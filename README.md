@@ -18,9 +18,9 @@ Ensure you have the following software installed:
    git clone https://github.com/nvnunes/survey_tools.git
    cd survey_tools
    ```
-2. Install the required dependencies:
+2. Install survey_tools locally as an editable package:
    ```bash
-   pip3 install -r requirements.txt
+   pip3 install -e path/to/survey_tools
    ```
 3. Optionally, download data files (see `data/README.txt`)
 
@@ -49,6 +49,7 @@ survey_tools/
 │   ├── healpix.py            # Convert between HEALpix and celestial coordinates
 │   ├── match.py              # Cross-match catalogs by ID and celestial coordinates
 │   └── sky.py                # Atmospheric transmission and emission line rejection
+├── targets/                  # Select galaxy targets from catalogs
 ├── tests/                    # Unit tests (under development)
 ├── requirements.txt          # List of Python dependencies
 └── README.md                 # Project overview, installation, and contents

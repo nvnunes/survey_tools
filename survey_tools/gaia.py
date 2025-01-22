@@ -8,8 +8,12 @@ import os
 from contextlib import redirect_stderr, redirect_stdout
 import numpy as np
 import astropy.units as u
-from astroquery.gaia import Gaia
+from astroquery.gaia import Gaia, GaiaClass
+import requests
 from survey_tools import healpix
+
+class GaiaException(Exception):
+    pass
 
 def _get_bounding_box(min_ra, max_ra, min_dec, max_dec):
     ra = (min_ra + max_ra)/2
@@ -52,7 +56,7 @@ def _get_level_clause(level, pix):
 
     return f"AND gaia_healpix_index({level}, SOURCE_ID) = {pix}"
 
-def _get_star_count(ra, dec, radius=None, box=(), level=None, pix=None, verbose=False):
+def _count_stars(ra, dec, radius=None, box=(), level=None, pix=None, verbose=False):
     region_clause = _get_region_clause(ra, dec, radius=radius, box=box)
     level_clause = _get_level_clause(level, pix)
 
@@ -65,12 +69,17 @@ SELECT COUNT(*)
    AND in_galaxy_candidates = '0'
     """
 
-    if verbose:
-        job = Gaia.launch_job_async(query, verbose=True)
-    else:
-        with open(os.devnull, 'w') as fnull: # pylint: disable=unspecified-encoding
-            with redirect_stdout(fnull), redirect_stderr(fnull):
-                job = Gaia.launch_job_async(query)
+    try:
+        if verbose:
+            job = GaiaClass(verbose=True).launch_job_async(query, verbose=True)
+        else:
+            with open(os.devnull, 'w') as fnull: # pylint: disable=unspecified-encoding
+                with redirect_stdout(fnull), redirect_stderr(fnull):
+                    job = Gaia.launch_job_async(query)
+    except requests.exceptions.HTTPError as e: # pylint: disable=no-member
+        if str(e) == 'OK':
+            raise GaiaException('Archive is likely down for maintenance') from e
+        raise e
 
     results = job.get_results()
 
@@ -99,12 +108,17 @@ SELECT SOURCE_ID AS gaia_id
  ORDER BY SOURCE_ID
     """
 
-    if verbose:
-        job = Gaia.launch_job_async(query, verbose=True)
-    else:
-        with open(os.devnull, 'w') as fnull: # pylint: disable=unspecified-encoding
-            with redirect_stdout(fnull), redirect_stderr(fnull):
-                job = Gaia.launch_job_async(query)
+    try:
+        if verbose:
+            job = GaiaClass(verbose=True).launch_job_async(query, verbose=True)
+        else:
+            with open(os.devnull, 'w') as fnull: # pylint: disable=unspecified-encoding
+                with redirect_stdout(fnull), redirect_stderr(fnull):
+                    job = Gaia.launch_job_async(query)
+    except requests.exceptions.HTTPError as e: # pylint: disable=no-member
+        if str(e) == 'OK':
+            raise GaiaException('Archive is likely down for maintenance') from e
+        raise e
 
     results = job.get_results()
 
@@ -116,20 +130,49 @@ SELECT SOURCE_ID AS gaia_id
 
     return results
 
-def get_stars_count_by_ra_dec(min_ra, max_ra, min_dec, max_dec, verbose=False):
-    ra, dec, width, height = _get_bounding_box(min_ra, max_ra, min_dec, max_dec)
-    return _get_star_count(ra, dec, box=(width, height), verbose=verbose)
+def count_stars_by_ra_dec_distance(ra, dec, radius, verbose=False):
+    return _count_stars(ra, dec, radius=radius, verbose=verbose)
 
-def get_stars_by_ra_dec(min_ra, max_ra, min_dec, max_dec, verbose=False):
+def get_stars_by_ra_dec_distance(ra, dec, radius, verbose=False):
+    return _get_stars(ra, dec, radius=radius, verbose=verbose)
+
+def count_stars_by_ra_dec_range(min_ra, max_ra, min_dec, max_dec, verbose=False):
+    ra, dec, width, height = _get_bounding_box(min_ra, max_ra, min_dec, max_dec)
+    return _count_stars(ra, dec, box=(width, height), verbose=verbose)
+
+def get_stars_by_ra_dec_range(min_ra, max_ra, min_dec, max_dec, verbose=False):
     ra, dec, width, height = _get_bounding_box(min_ra, max_ra, min_dec, max_dec)
     return _get_stars(ra, dec, box=(width, height), verbose=verbose)
 
-def get_star_count_by_healpix(level, pix, verbose=False):
+def count_stars_by_healpix(level, pix, verbose=False):
     # Querying Gaia is MUCH faster when using RA/Dec query conditions as well
     ra, dec, radius = _get_healpix_circle(level, pix)
-    return _get_star_count(ra, dec, radius=radius, level=level, pix=pix, verbose=verbose)
+    return _count_stars(ra, dec, radius=radius, level=level, pix=pix, verbose=verbose)
 
 def get_stars_by_healpix(level, pix, verbose=False):
     # Querying Gaia is MUCH faster when using RA/Dec query conditions as well
     ra, dec, radius = _get_healpix_circle(level, pix)
     return _get_stars(ra, dec, radius=radius, level=level, pix=pix, verbose=verbose)
+
+def apply_proper_motion(stars, dT=None, epoch=None):
+    if dT is None and epoch is None:
+        raise GaiaException('Either dT or epoch must be provided')
+
+    if dT is None:
+        dT = epoch - stars['gaia_ref_epoch']
+
+    pm_ra  = stars['gaia_pmra'] / np.cos(stars['gaia_dec']/180.0*np.pi) # mas[ra]/year
+    pm_dec = stars['gaia_pmdec']                                        # mas/year
+
+    if np.ma.is_masked(pm_ra):
+        pm_ra.fill_value = 0.0
+        pm_ra = pm_ra.filled()
+
+    if np.ma.is_masked(pm_dec):
+        pm_dec.fill_value = 0.0
+        pm_dec = pm_dec.filled()
+
+    epoch_ra  = stars['gaia_ra']  + dT * pm_ra  / 1000 / 3600
+    epoch_dec = stars['gaia_dec'] + dT * pm_dec / 1000 / 3600
+
+    return (epoch_ra, epoch_dec)

@@ -24,7 +24,9 @@ dependencies = [
     "tabulate",
     "astropy-healpix",
     "joblib",
-    "skyproj"
+    "skyproj",
+    "photutils",
+    "dust_extinction"
 ]
 dynamic = ["version"]
 

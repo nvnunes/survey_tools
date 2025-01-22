@@ -12,7 +12,7 @@ from astropy.constants import si as constants
 from astropy.convolution import convolve, Gaussian1DKernel
 from astropy.io import ascii
 from astropy.table import Table
-from scipy.signal import find_peaks, peak_widths
+from scipy.signal import find_peaks, peak_widths # pylint: disable=no-name-in-module
 
 class StructType:
     pass
@@ -120,22 +120,29 @@ def get_vacuum_to_air_wavelength(wavelength):
     # See: https://classic.sdss.org/dr7/products/spectra/vacwavelength.php
     return wavelength / (1 + 2.735182e-4 + 1.314182e2 * np.power(wavelength,-2) + 2.76249e8 * np.power(wavelength,-4))
 
-def get_emission_line_rest_wavelengths():
-    rest_lambda = StructType()
-    rest_lambda.OIIa  = 3727.092 # angstrom
-    rest_lambda.OIIb  = 3729.875 # angstrom
-    rest_lambda.Hb    = 4862.680 # angstrom
-    rest_lambda.OIIIa = 4960.295 # angstrom
-    rest_lambda.OIIIb = 5008.240 # angstrom
-    rest_lambda.NIIa  = 6549.86  # angstrom
-    rest_lambda.Ha    = 6564.610 # angstrom
-    rest_lambda.NIIb  = 6585.27  # angstrom
-    rest_lambda.SIIa  = 6718.29  # angstrom
-    rest_lambda.SIIb  = 6732.67  # ansgtrom
-    return rest_lambda
+def get_emission_line_rest_wavelengths(skip_close_doublets=False):
+    lines = { # Angstrom
+        'OIIa' : 3727.092,
+        'OIIb' : 3729.875,
+        'Hb'   : 4862.680,
+        'OIIIa': 4960.295,
+        'OIIIb': 5008.240,
+        'NIIa' : 6549.86,
+        'Ha'   : 6564.610,
+        'NIIb' : 6585.27,
+        'SIIa' : 6718.29,
+        'SIIb' : 6732.67,
+    }
+
+    if skip_close_doublets:
+        wavelength_OIIa = lines.pop('OIIa')
+        wavelength_OIIb = lines.pop('OIIb')
+        lines['OII'] = np.mean([wavelength_OIIa, wavelength_OIIb])
+
+    return lines
 
 # pylint: disable=unused-argument
-def get_mean_transmission(transmission_data, wavelengths, velocity_dispersion, spectral_resolving_power, trans_dLambda_multiple = 0.5):
+def get_mean_transmission(transmission_data, wavelengths, fwhm, spectral_resolving_power, trans_dLambda_multiple = 0.5):
     if hasattr(wavelengths, 'shape'):
         N = wavelengths.size
         transmission = np.zeros(wavelengths.shape)
@@ -150,7 +157,7 @@ def get_mean_transmission(transmission_data, wavelengths, velocity_dispersion, s
             wavelength = wavelengths[i]
 
         # Option 1: FWHM of line given dispersion
-        # dwavelength = np.sqrt(np.power(current_wavelength/spectral_resolving_power, 2) + np.power(current_wavelength * velocity_dispersion/astropy.constants.c.to('km/s').value, 2))
+        # dwavelength = np.sqrt(np.power(current_wavelength/spectral_resolving_power, 2) + np.power(fwhm, 2))
         # Option 2: FWHM of peak given spectral resolving power (probably better as this will correspond to the transmission around the peak)
         dwavelength = wavelength/spectral_resolving_power
         # Option 3: Weighted by gaussian profile (probably the best option)
@@ -177,7 +184,7 @@ def get_low_res_background(background_data, wavelength_range, spectral_resolving
     wavelength_filter = (background_data['wavelength'] >= wavelength_range[0] - mean_dwavelength*10) & (background_data['wavelength'] <= wavelength_range[1] + mean_dwavelength*10)
 
     if np.sum(wavelength_filter) == 0:
-        raise AtmosphereException('Wavelength range not in sky background file')
+        return None
 
     wavelengths = background_data['wavelength'][wavelength_filter]
 
@@ -199,13 +206,17 @@ def get_low_res_background(background_data, wavelength_range, spectral_resolving
         ]
     )
 
-def get_background(background_data, wavelength, wavelength_range, spectral_resolving_power):
-    background_low_res = get_low_res_background(background_data, wavelength_range, spectral_resolving_power)
-
-    if wavelength <= wavelength_range[0] or wavelength >= wavelength_range[1]:
-        return 0.0
-
-    return np.interp(wavelength, background_low_res['wavelength'], background_low_res['emission'])
+def get_background(background_data, wavelengths, wavelength_range, spectral_resolving_power):
+    if np.size(wavelengths) == 1:
+        background_low_res = get_low_res_background(background_data, wavelength_range, spectral_resolving_power)
+        if wavelengths <= wavelength_range[0] or wavelengths >= wavelength_range[1]:
+            return 0.0
+        return np.interp(wavelengths, background_low_res['wavelength'], background_low_res['emission'])
+    else:
+        backgrounds = np.full(wavelengths.shape, np.nan)
+        for i in np.arange(len(wavelengths)):
+            backgrounds[i] = get_background(background_data, wavelengths[i], [wavelength_range[0][i], wavelength_range[1][i]], spectral_resolving_power)
+        return backgrounds
 
 def find_sky_lines(background_data, min_photo_rate = 10.0):
     peaks, _ = find_peaks(background_data['emission'], height=min_photo_rate)
@@ -240,7 +251,7 @@ def find_sky_lines(background_data, min_photo_rate = 10.0):
 
     return sky_lines
 
-def reject_emission_line(background_data, transmission_data, wavelength, velocity_dispersion, spectral_resolving_power, allowed_wavelength_range = None, trans_minimum = 1.0, trans_dLambda_multiple = 0.5, avoid_dLambda_multiple = 1.0, min_photon_rate = 10.0):
+def reject_emission_line(background_data, transmission_data, wavelength, fwhm, spectral_resolving_power, allowed_wavelength_range = None, trans_minimum = 1.0, trans_dLambda_multiple = 0.5, avoid_dLambda_multiple = 1.0, min_photon_rate = 10.0):
     if hasattr(wavelength, 'shape'):
         N = wavelength.size
         rejects = np.ones(wavelength.shape, dtype=np.bool)
@@ -254,14 +265,19 @@ def reject_emission_line(background_data, transmission_data, wavelength, velocit
         else:
             current_wavelength = wavelength[i]
 
+        if np.size(fwhm) == 1:
+            current_fwhm = fwhm
+        else:
+            current_fwhm = fwhm[i]
+
         reject = False
 
         if current_wavelength == 0:
             reject = True
         else:
-            dwavelength = np.sqrt(np.power(current_wavelength/spectral_resolving_power,2) + np.power(current_wavelength * velocity_dispersion/constants.c.to('km/s').value,2))
+            dwavelength = np.sqrt(np.power(current_wavelength/spectral_resolving_power,2) + np.power(current_fwhm,2))
             wavelength_range = current_wavelength + 10*dwavelength*np.array([-0.5, 0.5])
-            trans = get_mean_transmission(transmission_data, current_wavelength, velocity_dispersion, spectral_resolving_power, trans_dLambda_multiple)
+            trans = get_mean_transmission(transmission_data, current_wavelength, current_fwhm, spectral_resolving_power, trans_dLambda_multiple)
 
             if trans < trans_minimum:
                 reject = True
