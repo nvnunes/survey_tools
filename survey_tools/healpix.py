@@ -5,12 +5,13 @@
 # pylint: disable=invalid-name,too-many-arguments,too-many-locals,too-many-statements,too-many-branches
 
 import copy
+from logging import warning
 import matplotlib as mpl
 from matplotlib import pyplot as plt
 from mpl_toolkits.axisartist import angle_helper
 import numpy as np
 from astropy.table import Table
-from astropy.coordinates import SkyCoord
+from astropy.coordinates import Longitude, Latitude, SkyCoord
 import astropy.units as u
 import astropy_healpix as healpix
 from astropy_healpix import HEALPix
@@ -172,8 +173,8 @@ def get_subpixels_detail(outer_level, outer_pix, inner_level, frame='icrs'):
 
 #region Plotting
 
-def plot(values, level=None, pixs=None, skycoords=None, plot_properties=None):
-    _set_default_plot_properties(values, plot_properties)
+def plot(values, level=None, pixs=None, skycoords=None, contour_values=None, plot_properties=None):
+    _set_default_plot_properties(values, contour_values, plot_properties)
 
     with mpl.rc_context({
         'xtick.labelcolor': plot_properties['colors']['xtick_label'], # not supported in skyproj 1.x
@@ -204,6 +205,17 @@ def plot(values, level=None, pixs=None, skycoords=None, plot_properties=None):
         plot_properties['sp'] = sp
 
         _draw_map(values, level, pixs, skycoords, **plot_properties) # pylint: disable=possibly-used-before-assignment
+
+        if contour_values is not None:
+            contour_plot_properties = plot_properties.copy()
+            contour_plot_properties.update({
+                'cmap': plot_properties['contour_cmap'],
+                'norm': plot_properties['contour_norm'],
+                'vmin': plot_properties['contour_vmin'],
+                'vmax': plot_properties['contour_vmax']
+            })
+            _draw_map(contour_values, None, None, None, plot_type='contour', **contour_plot_properties)
+
         _draw_grid(**plot_properties)
         _draw_cbar(**plot_properties)
         _draw_boundaries(**plot_properties)
@@ -231,7 +243,7 @@ def _update_dictionary(dict1, dict2):
             dict1[key] = dict2[key]
     return dict1
 
-def _set_default_plot_properties(values, plot_properties=None):
+def _set_default_plot_properties(values, contour_values, plot_properties=None):
     """Plot Parameters:
        ---------------
     galactic : bool, optional
@@ -258,6 +270,12 @@ def _set_default_plot_properties(values, plot_properties=None):
       log = logarithmic color mapping.
       symlog = symmetric logarithmic, linear between -linthresh and linthresh.
       default: None (linear color mapping)
+    contour_cmap : str, optional
+      Specify the colormap for the contour. default: None
+    contour_norm : see norm, optional
+      Color normalization for the contour. default: None
+    contour_levels : int, optional
+      Number of levels for the contour. default: 10
     vmin : float
       The minimum range value
     vmax : float
@@ -386,48 +404,69 @@ def _set_default_plot_properties(values, plot_properties=None):
 
     # Normalization
     if values is not None:
-        is_valid = ~np.isnan(values) & ~np.isinf(values)
+        if plot_properties.get('vmin', None) is None and plot_properties.get('cbar_ticks', None) is not None:
+            plot_properties['vmin'] = np.min(plot_properties['cbar_ticks'])
 
-        if plot_properties.get('vmin', None) is None:
-            if plot_properties.get('cbar_ticks', None) is not None:
-                plot_properties['vmin'] = np.min(plot_properties['cbar_ticks'])
-            elif np.sum(is_valid) > 0:
-                plot_properties['vmin'] = np.min(values[is_valid])
-            elif 'vmin' not in plot_properties:
-                plot_properties['vmin'] = None
+        if plot_properties.get('vmax', None) is None and plot_properties.get('cbar_ticks', None) is not None:
+            plot_properties['vmax'] = np.max(plot_properties['cbar_ticks'])
 
-        if plot_properties.get('vmax', None) is None:
-            if plot_properties.get('cbar_ticks', None) is not None:
-                plot_properties['vmax'] = np.max(plot_properties['cbar_ticks'])
-            elif np.sum(is_valid) > 0:
-                plot_properties['vmax'] = np.max(values[is_valid])
-            elif 'vmax' not in plot_properties:
-                plot_properties['vmax'] = None
+        plot_properties['norm'], plot_properties['vmin'], plot_properties['vmax'] = _prepare_norm(
+            values,
+            plot_properties.get('norm', None),
+            plot_properties.get('vmin', None),
+            plot_properties.get('vmax', None)
+        )
 
-        norm = plot_properties.get('norm', None)
-        if norm is None:
-            norm = 'none'
+    # Contours
 
-        if isinstance(norm, str):
-            match norm.lower():
-                case 'lin' | 'norm' | 'normalize':
-                    norm = mpl.colors.Normalize()
-                case 'log':
-                    norm = mpl.colors.LogNorm()
-                case 'symlog':
-                    norm = mpl.colors.SymLogNorm(1, linscale=0.1, clip=True, base=10) # pylint: disable=unexpected-keyword-arg
-                case _:
-                    norm = mpl.colors.NoNorm()
+    if contour_values is not None:
+        if 'contour_cmap' not in plot_properties:
+            plot_properties['contour_cmap'] = None
 
-        norm.vmin = plot_properties['vmin']
-        norm.vmax = plot_properties['vmax']
-        norm.autoscale_None(values[is_valid])
+        plot_properties['contour_norm'], plot_properties['contour_vmin'], plot_properties['contour_vmax'] = _prepare_norm(
+            contour_values,
+            plot_properties.get('contour_norm', None),
+            plot_properties.get('contour_vmin', None),
+            plot_properties.get('contour_vmax', None)
+        )
 
-        plot_properties['norm'] = norm
+        if 'contour_levels' not in plot_properties:
+            plot_properties['contour_levels'] = None
 
     return plot_properties
 
+def _prepare_norm(values, norm, vmin, vmax):
+    is_valid = ~np.isnan(values) & ~np.isinf(values)
+
+    if vmin is None:
+        if np.sum(is_valid) > 0:
+            vmin = np.min(values[is_valid])
+
+    if vmax is None:
+        if np.sum(is_valid) > 0:
+            vmax = np.max(values[is_valid])
+
+    if norm is None:
+        norm = mpl.colors.NoNorm()
+    elif isinstance(norm, str):
+        match norm.lower():
+            case 'lin' | 'norm' | 'normalize':
+                norm = mpl.colors.Normalize()
+            case 'log':
+                norm = mpl.colors.LogNorm()
+            case 'symlog':
+                norm = mpl.colors.SymLogNorm(1, linscale=0.1, clip=True, base=10) # pylint: disable=unexpected-keyword-arg
+            case _:
+                raise HealpixException('Unrecognized norm')
+
+    norm.vmin = vmin
+    norm.vmax = vmax
+    norm.autoscale_None(values[is_valid])
+
+    return norm, vmin, vmax
+
 def _draw_map(values, level, pixs, skycoords,
+    plot_type='mesh',
     sp=None,
     mapcoord=None,
     zoom=False,
@@ -438,6 +477,9 @@ def _draw_map(values, level, pixs, skycoords,
 ):
     if values is None:
         return
+
+    if plot_type not in ['mesh', 'contour']:
+        raise HealpixException('Invalid map type')
 
     num_values = len(values)
 
@@ -461,9 +503,15 @@ def _draw_map(values, level, pixs, skycoords,
         if mapcoord != 'C':
             raise HealpixException('rotating coordinates is not supported when pixs specified')
 
+        if plot_type == 'contour':
+            raise HealpixException('contour plot is not support when pixs specified')
+
         sp.draw_hpxpix(_get_nside(level), pixs, values, nest=True, zoom=zoom, xsize=xsize, cmap=cmap, norm=norm)
     else:
         if mapcoord != 'C':
+            if skycoords is None:
+                skycoords = get_pixel_skycoord(level, pixs)
+
             rotator = Rotator(coord=['C', mapcoord], inv=True)
             theta_cel = np.deg2rad(90 - skycoords.dec.degree)
             phi_cel = np.deg2rad(skycoords.ra.degree)
@@ -473,7 +521,47 @@ def _draw_map(values, level, pixs, skycoords,
             remap_pixs = get_healpix_from_skycoord(level, SkyCoord(lon, lat, unit=(u.degree, u.degree)))
             values = values[remap_pixs]
 
-        sp.draw_hpxmap(values, nest=True, zoom=False, xsize=xsize, cmap=cmap, norm=norm)
+        if plot_type == 'contour':
+            _draw_contour_map(sp, values, xsize=xsize, cmap=cmap, norm=norm, **kwargs)
+        else:
+            sp.draw_hpxmap(values, nest=True, zoom=False, xsize=xsize, cmap=cmap, norm=norm)
+
+def _draw_contour_map(sp, values,
+        ax = None,
+        projection='cart',
+        xsize=1000,
+        cmap=None,
+        norm=None,
+        contour_levels=None,
+        **kwargs # pylint: disable=unused-argument
+    ):
+
+    if projection != 'cartesian':
+        warning('Contour plot only works correctly with the cartesian projection')
+
+    extent = sp.get_extent()
+    lon_range = [min(extent[0], extent[1]), max(extent[0], extent[1])]
+    lat_range = [extent[2], extent[3]]
+
+    aspect = 0.5
+    lon, lat = np.meshgrid(
+        np.linspace(lon_range[0], lon_range[1], xsize),
+        np.linspace(lat_range[0], lat_range[1], int(aspect*xsize))
+    )
+
+    hp = HEALPix(nside=_get_nside(get_level(len(values))), order='nested', frame='icrs')
+    pixs = hp.lonlat_to_healpix(Longitude(lon, unit=u.degree), Latitude(lat, unit=u.degree))
+    values_raster = values[pixs]
+
+    ax.contour(lon, lat, np.ma.array(values_raster, mask=np.isnan(values_raster)),
+        levels=contour_levels,
+        transform=ax.projection if projection != 'cartesian' else None,
+        cmap=cmap,
+        colors='k' if cmap is None else None,
+        norm=norm,
+        vmin=norm.vmin if norm is None else None,
+        vmax=norm.vmax if norm is None else None
+    )
 
 def _draw_grid(
         sp=None,
