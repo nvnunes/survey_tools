@@ -15,6 +15,9 @@ from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.table import Table
 import astropy.units as u
+from dustmaps.config import config as dustmaps_config
+from dustmaps.gaia_tge import fetch as fetch_gaia_tge
+from dustmaps.gaia_tge import GaiaTGEQuery
 from joblib import Parallel, delayed
 from survey_tools import gaia, healpix
 
@@ -47,6 +50,7 @@ FITS_COLUMN_DONE = 'DONE'
 FITS_COLUMN_EXCLUDED = 'EXCLUDED'
 FITS_COLUMN_PIX = 'PIX'
 FITS_COLUMN_MODEL_DENSITY = 'MODEL_DENSITY'
+FITS_COLUMN_DUST_EXTINCTION = 'DUST_EXTINCTION'
 FITS_COLUMN_STAR_COUNT = 'STAR_COUNT'
 FITS_COLUMN_NGS_COUNT_PREFIX = 'NGS_COUNT'
 FITS_COLUMN_NGS_PIX_PREFIX = 'NGS_PIX'
@@ -252,6 +256,11 @@ def build_inner(config_or_filename, mode='recalc', pixs=None, force_reload_gaia=
 def build_data(config_or_filename, mode='build', verbose = False):
     config = read_config(config_or_filename)
 
+    # Fetch the Gaia TGE map
+    dustmaps_config['data_dir'] = '../data/dust'
+    dustmaps_config.reset()
+    fetch_gaia_tge()
+
     allow_missing_inner_data = config.build_level is not None and config.build_pixs is not None
 
     force_create = mode.startswith('re')
@@ -285,6 +294,9 @@ def build_data(config_or_filename, mode='build', verbose = False):
         else:
             print(f"Building data for levels {levels[0]}-{levels[-1]}:")
 
+    # # Query Dust Extinction
+    gaia_tge = GaiaTGEQuery(healpix_level= 'optimum')
+
     start_time = time.time()
     last_time = start_time
 
@@ -294,7 +306,7 @@ def build_data(config_or_filename, mode='build', verbose = False):
 
         # NOTE: parallelizing the following isn't effective as it is disk IO limited
         for outer_pix in range(outer_start_pix, outer_end_pix):
-            _set_data_pixel_values(config, levels, level_data, outer_pix, allow_missing_inner_data=allow_missing_inner_data)
+            _set_data_pixel_values(config, levels, level_data, outer_pix, gaia_tge, allow_missing_inner_data=allow_missing_inner_data)
 
         for data in level_data:
             data.flush()
@@ -322,6 +334,7 @@ def _create_data(config, level):
     cols = []
     cols.append(fits.Column(name=FITS_COLUMN_PIX, format='K', array=np.arange(npix)))
     cols.append(fits.Column(name=FITS_COLUMN_MODEL_DENSITY, format='D', array=np.zeros((npix)), unit='density'))
+    cols.append(fits.Column(name=FITS_COLUMN_DUST_EXTINCTION, format='D', array=np.zeros((npix)), unit='mag'))
     cols.append(fits.Column(name=FITS_COLUMN_STAR_COUNT, format='K', array=np.zeros((npix), dtype=np.int_), unit='stars'))
     for ao_system in config.ao_systems:
         cols.append(fits.Column(name=_get_ngs_count_field(ao_system), format='K', array=np.zeros((npix), dtype=np.int_), unit='NGS'))
@@ -343,7 +356,7 @@ def _load_data(config, level, update=False):
         raise AOMapException(f"Data file not found: {filename}")
     return fits.open(filename, mode='update' if update else 'readonly')
 
-def _set_data_pixel_values(config, levels, level_data, outer_pix, allow_missing_inner_data=False):
+def _set_data_pixel_values(config, levels, level_data, outer_pix, gaia_tge, allow_missing_inner_data=False):
     inner_filename = _get_inner_pixel_data_filename(config, outer_pix)
     if not os.path.isfile(inner_filename) or not _is_good_FITS(inner_filename):
         if allow_missing_inner_data:
@@ -351,8 +364,14 @@ def _set_data_pixel_values(config, levels, level_data, outer_pix, allow_missing_
         else:
             raise AOMapException(f"Inner data not found for outer pixel {outer_pix}")
 
+    dust_level = 9
+    _ , coords = healpix.get_subpixels_skycoord(config.outer_level, outer_pix, dust_level)
+
+    dust_extinction_max_level = gaia_tge.query(coords)  # Todo: check if .galactic is needed
+    dust_extinction = np.repeat(dust_extinction_max_level, 4**(config.inner_level - dust_level))
+
     inner_data = _load_inner(config, outer_pix)
-    aggregate_data = _get_initial_aggregate_pixel_values(config, inner_data)
+    aggregate_data = _get_initial_aggregate_pixel_values(config, inner_data, dust_extinction)
     inner_data.close()
 
     level_done = np.zeros((len(levels)), dtype=bool)
@@ -361,6 +380,7 @@ def _set_data_pixel_values(config, levels, level_data, outer_pix, allow_missing_
             level_index = levels.index(level)
 
             level_data[level_index][1].data[FITS_COLUMN_MODEL_DENSITY][aggregate_data.pix] = aggregate_data.mean_model_density
+            level_data[level_index][1].data[FITS_COLUMN_DUST_EXTINCTION][aggregate_data.pix] = aggregate_data.mean_dust_extinction
             level_data[level_index][1].data[FITS_COLUMN_STAR_COUNT][aggregate_data.pix] = aggregate_data.sum_star_count
             for i, ao_system in enumerate(config.ao_systems):
                 level_data[level_index][1].data[_get_ngs_count_field(ao_system)][aggregate_data.pix] = aggregate_data.sum_ngs_count[:,i]
@@ -373,10 +393,11 @@ def _set_data_pixel_values(config, levels, level_data, outer_pix, allow_missing_
 
         _aggregate_pixel_values(config, aggregate_data)
 
-def _get_initial_aggregate_pixel_values(config, inner_data):
+def _get_initial_aggregate_pixel_values(config, inner_data, dust_extinction):
     aggregate_data = StructType()
     aggregate_data.pix = _get_inner_pixel_data_column(inner_data, FITS_COLUMN_PIX)
     aggregate_data.mean_model_density = _get_inner_pixel_data_column(inner_data, FITS_COLUMN_MODEL_DENSITY)
+    aggregate_data.mean_dust_extinction = dust_extinction
     aggregate_data.sum_star_count = _get_inner_pixel_data_column(inner_data, FITS_COLUMN_STAR_COUNT)
     if len(config.ao_systems) > 0:
         aggregate_data.sum_ngs_count = np.zeros((len(aggregate_data.pix), len(config.ao_systems)), dtype=np.int_)
@@ -388,6 +409,7 @@ def _get_initial_aggregate_pixel_values(config, inner_data):
 def _aggregate_pixel_values(config, aggregate_data):
     aggregate_data.pix = _decrease_pix_level(aggregate_data.pix)
     aggregate_data.mean_model_density = _decrease_values_level(aggregate_data.mean_model_density, 'mean')
+    aggregate_data.mean_dust_extinction = _decrease_values_level(aggregate_data.mean_dust_extinction, 'mean')
     aggregate_data.sum_star_count = _decrease_values_level(aggregate_data.sum_star_count, 'sum')
     if len(config.ao_systems) > 0:
         aggregate_data.sum_ngs_count = _decrease_values_level(aggregate_data.sum_ngs_count, 'sum')
@@ -627,6 +649,8 @@ def _get_map_title(key, ao_system=None):
     match key:
         case 'model-density':
             title = 'Galaxy Model'
+        case 'dust-extinction':
+            title = 'Dust Extinction'
         case 'star-count':
             title = 'Star Count'
         case 'star-density':

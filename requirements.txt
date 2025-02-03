@@ -11,3 +11,4 @@ astropy-healpix
 joblib
 skyproj
 dust_extinction
+dustmaps
