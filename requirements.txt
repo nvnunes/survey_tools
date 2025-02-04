@@ -10,5 +10,6 @@ tabulate
 astropy-healpix
 joblib
 skyproj
+photutils
 dust_extinction
 dustmaps

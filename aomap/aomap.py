@@ -877,6 +877,7 @@ def get_map_table(config, map_level, key, level=None, pixs=None, coords=()):
     ])
 
 def plot_map(map_data=None,
+            contours=None,                 # plot countours using additional map_data
             galactic=False,                # rotate map from celestial to galactic coordinates
             projection='astro',            # astro | cart [hours | degrees | longitude]
             zoom=None,                     # zoom in on the map
@@ -886,10 +887,13 @@ def plot_map(map_data=None,
             dpi=None,                      # figure dpi
             xsize=None,                    # x-axis pixel dimensions
             grid=True,                     # display grid lines
-            cmap=None,                     # specify the colormap
-            norm=None,                     # color normalization
+            cmap=None,                     # colormap
+            norm=None,                     # normalization
             vmin=None,                     # minimum value for color normalization
             vmax=None,                     # maximum value for color normalization
+            contour_cmap=None,             # contour colormap
+            contour_norm=None,             # contour normalization
+            contour_levels=None,           # contour levels
             cbar=True,                     # display the colorbar
             cbar_ticks=None,               # colorbar ticks
             cbar_format=None,              # colorbar number format
@@ -922,6 +926,21 @@ def plot_map(map_data=None,
             cbar_format = map_data.num_format
         if title is None:
             title = map_data.title
+
+    if contours is not None:
+        if isinstance(contours, bool):
+            if map_data is not None:
+                contour_values = map_data.values
+
+                if contour_norm is None:
+                    contour_norm = map_data.norm
+        else:
+            contour_values = contours.values
+
+            if contour_norm is None:
+                contour_norm = contours.norm
+    else:
+        contour_values = None
 
     if galactic:
         xlabel = 'GLON'
@@ -971,7 +990,11 @@ def plot_map(map_data=None,
         values = values.astype(float, copy=True)
         values[values <= 0.0] = np.nan
 
-    return healpix.plot(values, level=level, pixs=pixs, skycoords=skycoords, plot_properties={
+    if contour_values is not None and contour_norm is not None and 'log' in contour_norm and contour_values is not None and np.any(contour_values <= 0):
+        contour_values = contour_values.astype(float, copy=True)
+        contour_values[contour_values <= 0.0] = np.nan
+
+    return healpix.plot(values, level=level, pixs=pixs, skycoords=skycoords, contour_values=contour_values, plot_properties={
         'galactic': galactic,
         'projection': projection,
         'zoom': zoom,
@@ -984,6 +1007,9 @@ def plot_map(map_data=None,
         'norm': norm,
         'vmin': vmin,
         'vmax': vmax,
+        'contour_cmap': contour_cmap,
+        'contour_norm': contour_norm,
+        'contour_levels': contour_levels,
         'grid': grid,
         'grid_longitude': grid_longitude,
         'cbar': cbar,
