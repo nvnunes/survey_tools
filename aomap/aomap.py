@@ -109,6 +109,9 @@ def read_config(config_or_filename):
     if not hasattr(config, 'exclude_min_galactic_latitude'):
         config.exclude_min_galactic_latitude = 0.0
 
+    if not hasattr(config, 'max_dust_extinction'):
+        config.max_dust_extinction = None
+
     return config
 
 #endregion
@@ -699,8 +702,11 @@ def _read_FITS_single_column_values(config, hdu, level, key, ao_system):
 
             max_count = 1/inner_area * level_area
             min_count = wfs/fov_area * level_area
-
             has_values = (data[max_field] < max_count) & (data[min_field] > min_count)
+
+            if config.max_dust_extinction is not None:
+                has_values &= data[FITS_COLUMN_DUST_EXTINCTION] <= config.max_dust_extinction
+
             values = np.full((len(data)), np.nan)
             values[has_values] = data[field][has_values] / level_area
             is_density = True
