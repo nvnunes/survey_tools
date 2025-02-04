@@ -380,7 +380,7 @@ def _set_default_plot_properties(values, plot_properties=None):
     cmap = copy.copy(cmap0)
     cmap.set_over(plot_properties['colors']['badvalue'])
     cmap.set_under(plot_properties['colors']['badvalue'])
-    cmap.set_bad(plot_properties['colors']['background'])
+    cmap.set_bad(plot_properties['colors']['badvalue'])
 
     plot_properties['cmap'] = cmap
 

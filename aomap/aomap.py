@@ -16,8 +16,7 @@ from astropy.io import fits
 from astropy.table import Table
 import astropy.units as u
 from dustmaps.config import config as dustmaps_config
-from dustmaps.gaia_tge import fetch as fetch_gaia_tge
-from dustmaps.gaia_tge import GaiaTGEQuery
+import dustmaps.gaia_tge as gaia_tge
 from joblib import Parallel, delayed
 from survey_tools import gaia, healpix
 
@@ -256,10 +255,10 @@ def build_inner(config_or_filename, mode='recalc', pixs=None, force_reload_gaia=
 def build_data(config_or_filename, mode='build', verbose = False):
     config = read_config(config_or_filename)
 
-    # Fetch the Gaia TGE map
-    dustmaps_config['data_dir'] = '../data/dust'
     dustmaps_config.reset()
-    fetch_gaia_tge()
+    dustmaps_config['data_dir'] = '../data/dust'
+    os.makedirs(dustmaps_config['data_dir'], exist_ok=True)
+    gaia_tge.fetch()
 
     allow_missing_inner_data = config.build_level is not None and config.build_pixs is not None
 
@@ -294,8 +293,7 @@ def build_data(config_or_filename, mode='build', verbose = False):
         else:
             print(f"Building data for levels {levels[0]}-{levels[-1]}:")
 
-    # # Query Dust Extinction
-    gaia_tge = GaiaTGEQuery(healpix_level= 'optimum')
+    dust = gaia_tge.GaiaTGEQuery(healpix_level= 'optimum')
 
     start_time = time.time()
     last_time = start_time
@@ -306,7 +304,7 @@ def build_data(config_or_filename, mode='build', verbose = False):
 
         # NOTE: parallelizing the following isn't effective as it is disk IO limited
         for outer_pix in range(outer_start_pix, outer_end_pix):
-            _set_data_pixel_values(config, levels, level_data, outer_pix, gaia_tge, allow_missing_inner_data=allow_missing_inner_data)
+            _set_data_pixel_values(config, levels, level_data, outer_pix, dust, allow_missing_inner_data=allow_missing_inner_data)
 
         for data in level_data:
             data.flush()
@@ -356,7 +354,7 @@ def _load_data(config, level, update=False):
         raise AOMapException(f"Data file not found: {filename}")
     return fits.open(filename, mode='update' if update else 'readonly')
 
-def _set_data_pixel_values(config, levels, level_data, outer_pix, gaia_tge, allow_missing_inner_data=False):
+def _set_data_pixel_values(config, levels, level_data, outer_pix, dust, allow_missing_inner_data=False):
     inner_filename = _get_inner_pixel_data_filename(config, outer_pix)
     if not os.path.isfile(inner_filename) or not _is_good_FITS(inner_filename):
         if allow_missing_inner_data:
@@ -364,11 +362,11 @@ def _set_data_pixel_values(config, levels, level_data, outer_pix, gaia_tge, allo
         else:
             raise AOMapException(f"Inner data not found for outer pixel {outer_pix}")
 
-    dust_level = 9
+    dust_level = config.max_data_level
     _ , coords = healpix.get_subpixels_skycoord(config.outer_level, outer_pix, dust_level)
-
-    dust_extinction_max_level = gaia_tge.query(coords)  # Todo: check if .galactic is needed
-    dust_extinction = np.repeat(dust_extinction_max_level, 4**(config.inner_level - dust_level))
+    dust_extinction = dust.query(coords)
+    if config.inner_level > dust_level:
+        dust_extinction = np.repeat(dust_extinction, 4**(config.inner_level - dust_level))
 
     inner_data = _load_inner(config, outer_pix)
     aggregate_data = _get_initial_aggregate_pixel_values(config, inner_data, dust_extinction)
@@ -890,6 +888,8 @@ def plot_map(map_data=None,
             grid=True,                     # display grid lines
             cmap=None,                     # specify the colormap
             norm=None,                     # color normalization
+            vmin=None,                     # minimum value for color normalization
+            vmax=None,                     # maximum value for color normalization
             cbar=True,                     # display the colorbar
             cbar_ticks=None,               # colorbar ticks
             cbar_format=None,              # colorbar number format
@@ -961,6 +961,12 @@ def plot_map(map_data=None,
     else:
         grid_longitude = 'hours'
 
+    if norm is not None and vmin is not None:
+        values[values < vmin] = vmin
+
+    if norm is not None and vmax is not None:
+        values[values > vmax] = vmax
+
     if norm is not None and 'log' in norm and values is not None and np.any(values <= 0):
         values = values.astype(float, copy=True)
         values[values <= 0.0] = np.nan
@@ -976,6 +982,8 @@ def plot_map(map_data=None,
         'dpi': dpi,
         'cmap': cmap,
         'norm': norm,
+        'vmin': vmin,
+        'vmax': vmax,
         'grid': grid,
         'grid_longitude': grid_longitude,
         'cbar': cbar,
