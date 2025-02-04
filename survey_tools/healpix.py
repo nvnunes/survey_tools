@@ -228,6 +228,16 @@ def plot(values, level=None, pixs=None, skycoords=None, contour_values=None, plo
                 linestyle='-'
             )
 
+        if plot_properties.get('ecliptic', False):
+            _draw_ecliptic(
+                sp = plot_properties['sp'],
+                galactic=plot_properties['galactic'],
+                width=plot_properties['ecliptic_width'] if plot_properties.get('ecliptic_width', None) is not None else 10,
+                linewidth=1.5,
+                color=plot_properties['colors']['ecliptic'],
+                linestyle='-'
+            )
+
         if plot_properties.get('tissot', False):
             sp.tissot_indicatrices()
 
@@ -354,7 +364,8 @@ def _set_default_plot_properties(values, contour_values, plot_properties=None):
         'xtick_label': 'black',
         'ytick_label': 'black',
         'boundaries': 'red',
-        'milkyway': 'black'
+        'milkyway': 'black',
+        'ecliptic': 'black'
     }
 
     if plot_properties['projection'] in GLOBE_PROJECTIONS:
@@ -710,6 +721,43 @@ def _draw_boundaries(
             continue
 
         ax.text(center_lon[i], center_lat[i], f"{pix}", color=colors['boundaries'], fontsize=boundaries_label_fontsize, ha='center', va='center')
+
+def _draw_ecliptic(
+        sp=None,
+        galactic=False,
+        width=10,
+        linewidth=1.5,
+        color='black',
+        linestyle='-',
+        **kwargs # pylint: disable=unused-argument
+    ):
+
+    elon = np.linspace(0, 360, 500)
+    elat = np.zeros_like(elon)
+    ec = SkyCoord(lon=elon*u.degree, lat=elat*u.degree, frame='barycentricmeanecliptic')
+
+    if galactic:
+        lon = ec.galactic.l.degree
+        lat = ec.galactic.b.degree
+    else:
+        lon = ec.fk5.ra.degree
+        lat = ec.fk5.dec.degree
+
+    sp.plot(lon, lat, linewidth=linewidth, color=color, linestyle=linestyle, **kwargs)
+    # pop any labels
+    # kwargs.pop('label', None)
+
+    if width > 0:
+        for delta in [+width, -width]:
+            ec = SkyCoord(lon=elon*u.degree, lat=(elat + delta)*u.degree, frame='barycentricmeanecliptic')
+            if galactic:
+                lon = ec.galactic.l.degree
+                lat = ec.galactic.b.degree
+            else:
+                lon = ec.fk5.ra.degree
+                lat = ec.fk5.dec.degree
+
+            sp.plot(lon, lat, linewidth=1.0, color=color, linestyle='--', **kwargs)
 
 def _draw_cbar(
         sp=None,

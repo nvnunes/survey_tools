@@ -112,6 +112,9 @@ def read_config(config_or_filename):
     if not hasattr(config, 'max_dust_extinction'):
         config.max_dust_extinction = None
 
+    if not hasattr(config, 'min_ecliptic_latitude'):
+        config.min_ecliptic_latitude = None
+
     return config
 
 #endregion
@@ -707,6 +710,10 @@ def _read_FITS_single_column_values(config, hdu, level, key, ao_system):
             if config.max_dust_extinction is not None:
                 has_values &= data[FITS_COLUMN_DUST_EXTINCTION] <= config.max_dust_extinction
 
+            if config.min_ecliptic_latitude is not None:
+                ecliptic_coords = healpix.get_pixel_skycoord(level, data[FITS_COLUMN_PIX]).barycentrictrueecliptic
+                has_values &= np.abs(ecliptic_coords.lat.degree) >= config.min_ecliptic_latitude
+
             values = np.full((len(data)), np.nan)
             values[has_values] = data[field][has_values] / level_area
             is_density = True
@@ -909,7 +916,9 @@ def plot_map(map_data=None,
             title=None,                    # plot title
             tissot=False,                  # display Tissot's indicatrices
             milkyway=False,                # display outline of Milky Way
-            milkyway_width=None            # number of degrees north/south to draw dotted line
+            milkyway_width=None,           # number of degrees north/south to draw dotted line
+            ecliptic=False,                # display outline of the ecliptic
+            ecliptic_width=None            # number of degrees north/south to draw dotted line
     ):
 
     if map_data is None:
@@ -1029,7 +1038,9 @@ def plot_map(map_data=None,
         'ylabel': ylabel,
         'tissot': tissot,
         'milkyway': milkyway,
-        'milkyway_width': milkyway_width
+        'milkyway_width': milkyway_width,
+        'ecliptic': ecliptic,
+        'ecliptic_width': ecliptic_width
     })
 
 def save_map(config, map_data, filename=None, overwrite=False):
