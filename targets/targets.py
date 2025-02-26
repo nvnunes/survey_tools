@@ -44,7 +44,7 @@ def _get_instrument_details(instrument):
         case _ if 'GNIRS' in instrument:
             instrument_details['location'] = 'MaunaKea'
             instrument_details['wavelength_ranges'] = np.array([[11700, 13700],[14900, 18000],[19100,24900]])   # Angstrom
-            instrument_details['field_diameter'] = 60 # arcsec
+            instrument_details['field_diameter'] = 50 # arcsec
         case _ if 'ERIS' in instrument:
             instrument_details['location'] = 'Paranal'
             instrument_details['wavelength_ranges'] = np.array([[10900, 14200],[14500, 18700],[19300,24800]])   # Angstrom
@@ -978,6 +978,8 @@ def plot_galaxy_cutouts(galaxy, options, cutouts,
                         pa_arrow_length=0.025,
                         pa_arrow_width=0.002,
                         ifu_color='yellow',
+                        cbar=False,
+                        skip_norm=False,
                         silent=False
     ):
 
@@ -1018,7 +1020,7 @@ def plot_galaxy_cutouts(galaxy, options, cutouts,
     else:
         nrows = 1
 
-    _, axs = plt.subplots(nrows=nrows, ncols=ncols, figsize=(5*ncols,5*nrows), sharex=False, sharey=False, constrained_layout=True)
+    fig, axs = plt.subplots(nrows=nrows, ncols=ncols, figsize=(5*ncols,5*nrows), sharex=False, sharey=False, constrained_layout=True)
     if nrows == 1 and ncols == 1:
         ax = axs
         del axs
@@ -1105,7 +1107,8 @@ def plot_galaxy_cutouts(galaxy, options, cutouts,
                         bkg_values = plot_data.flatten()[segment_map.flatten() == 0]
 
                 # Normalize Plot Data
-                plot_data = ImageNormalize(stretch=AsinhStretch(a=asinh_a))(plot_data)
+                if not skip_norm:
+                    plot_data = ImageNormalize(stretch=AsinhStretch(a=asinh_a))(plot_data)
 
             # IFU Details
             if plot_ifu and plot_wcs is not None:
@@ -1129,9 +1132,9 @@ def plot_galaxy_cutouts(galaxy, options, cutouts,
             ax.set_axis_off() # pylint: disable=possibly-used-before-assignment
 
             if np.ndim(plot_data) == 3:
-                ax.imshow(plot_data, origin='lower')
+                img = ax.imshow(plot_data, origin='lower')
             else:
-                ax.imshow(plot_data, origin='lower', cmap='viridis')
+                img = ax.imshow(plot_data, origin='lower', cmap='viridis')
 
             if not hide_title:
                 title_location = 'bottom'
@@ -1155,6 +1158,10 @@ def plot_galaxy_cutouts(galaxy, options, cutouts,
                 else:
                     image_name = cutout.name
                 ax.text(title_x, title_y, image_name, transform=ax.transAxes, ha='center' if center_title else 'left', fontsize=fontsize, fontweight=fontweight, color=fontcolor)
+
+            # Plot Colorbar
+            if cbar and np.ndim(plot_data) != 3:
+                cbar = fig.colorbar(img, ax=ax)
 
             # Plot Position Angle Arrow
             if plot_pa != 0 and not hide_annotations:
