@@ -69,9 +69,9 @@ Sources:
  - https://archive.eso.org/scienceportal/home?data_collection=UltraVISTA&publ_date=2024-06-27
 
 Files:
- - data/images/UVISTA/ADP.2024-05-27T16_34_32.521.fits (J)
- - data/images/UVISTA/ADP.2024-05-27T16_34_32.523.fits (H)
- - data/images/UVISTA/ADP.2024-05-27T16_34_32.525.fits (K)
+ - data/images/UVISTA/UVISTA_J_12_01_24_allpaw_skysub_015_dr6_rc_v1.fits (ADP.2024-05-27T16_34_32.521.fits)
+ - data/images/UVISTA/UVISTA_H_12_01_24_allpaw_skysub_015_dr6_rc_v1.fits (ADP.2024-05-27T16_34_32.523.fits)
+ - data/images/UVISTA/UVISTA_Ks_12_01_24_allpaw_skysub_015_dr6_rc_v1.fits (ADP.2024-05-27T16_34_32.525.fits)
 
 ----------------------
 3D-HST v4.1/v4.1.5/4.2
