@@ -209,6 +209,7 @@ def plot(values, level=None, pixs=None, skycoords=None, contour_values=None, plo
         if contour_values is not None:
             contour_plot_properties = plot_properties.copy()
             contour_plot_properties.update({
+                'zoom': False,
                 'cmap': plot_properties['contour_cmap'],
                 'norm': plot_properties['contour_norm'],
                 'vmin': plot_properties['contour_vmin'],
@@ -429,7 +430,6 @@ def _set_default_plot_properties(values, contour_values, plot_properties=None):
         )
 
     # Contours
-
     if contour_values is not None:
         if 'contour_cmap' not in plot_properties:
             plot_properties['contour_cmap'] = None
@@ -461,7 +461,7 @@ def _prepare_norm(values, norm, vmin, vmax):
         norm = mpl.colors.NoNorm()
     elif isinstance(norm, str):
         match norm.lower():
-            case 'lin' | 'norm' | 'normalize':
+            case 'lin' | 'linear' | 'norm' | 'normalize':
                 norm = mpl.colors.Normalize()
             case 'log':
                 norm = mpl.colors.LogNorm()
@@ -539,7 +539,7 @@ def _draw_map(values, level, pixs, skycoords,
 
 def _draw_contour_map(sp, values,
         ax = None,
-        projection='cart',
+        projection='cartesian',
         xsize=1000,
         cmap=None,
         norm=None,
@@ -571,7 +571,8 @@ def _draw_contour_map(sp, values,
         colors='k' if cmap is None else None,
         norm=norm,
         vmin=norm.vmin if norm is None else None,
-        vmax=norm.vmax if norm is None else None
+        vmax=norm.vmax if norm is None else None,
+        linewidths=0.5
     )
 
 def _draw_grid(
@@ -583,7 +584,7 @@ def _draw_grid(
         colors=None,
         **kwargs # pylint: disable=unused-argument
 ):
-    if not hasattr(ax, 'gridlines'): # version 1.x
+    if not hasattr(ax, 'gridlines'): # skyproj 1.x
         is_old_version = True
         aa = sp._aa # pylint: disable=protected-access
         gridlines = aa.gridlines
@@ -609,7 +610,7 @@ def _draw_grid(
 
     # The following is a HACK to add support for:
     # 1. Longitude in Hours instead of Degrees
-    # 2. Tick with minute and second divisions if appropriate 
+    # 2. Tick with minute and second divisions if appropriate
 
     grid_helper = gridlines._grid_helper # pylint: disable=protected-access
 
@@ -655,6 +656,7 @@ def _draw_grid(
     x1, x2 = ax.get_xlim()
     y1, y2 = ax.get_ylim()
     grid_helper._update_grid(x1, y1, x2, y2) # pylint: disable=protected-access
+    grid_helper._old_limits = (x1, x2, y1, y2) # pylint: disable=protected-access
 
     if is_old_version:
         sp._draw_aa_bounds_and_labels() # pylint: disable=protected-access
@@ -662,6 +664,7 @@ def _draw_grid(
 def _draw_boundaries(
         ax=None,
         sp=None,
+        projection='cartesian',
         mapcoord='C',
         zoom=False,
         rotation=0.0,
@@ -677,8 +680,12 @@ def _draw_boundaries(
     if boundaries_pixs is not None and not isinstance(boundaries_pixs, list) and not isinstance(boundaries_pixs, np.ndarray):
         boundaries_pixs = [boundaries_pixs]
 
-    xlim = np.sort(np.rad2deg(ax.get_xlim()))
-    ylim = np.sort(np.rad2deg(ax.get_ylim()))
+    if projection == 'cartesian':
+        xlim = np.sort(ax.get_xlim())
+        ylim = np.sort(ax.get_ylim())
+    else:
+        xlim = np.sort(np.rad2deg(ax.get_xlim()))
+        ylim = np.sort(np.rad2deg(ax.get_ylim()))
 
     step = max(1,2**(7-boundaries_level)) # level 0 = 128, level 1 = 64, level 2 = 32, ...
     pixs = np.arange(get_npix(boundaries_level))

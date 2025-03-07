@@ -15,6 +15,7 @@ from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.table import Table
 import astropy.units as u
+import matplotlib.pyplot as plt
 from dustmaps.config import config as dustmaps_config
 import dustmaps.gaia_tge as gaia_tge
 from joblib import Parallel, delayed
@@ -918,7 +919,10 @@ def plot_map(map_data=None,
             milkyway=False,                # display outline of Milky Way
             milkyway_width=None,           # number of degrees north/south to draw dotted line
             ecliptic=False,                # display outline of the ecliptic
-            ecliptic_width=None            # number of degrees north/south to draw dotted line
+            ecliptic_width=None,           # number of degrees north/south to draw dotted line
+            colors=None,
+            fontsize=None,
+            return_fig = False
     ):
 
     if map_data is None:
@@ -975,7 +979,8 @@ def plot_map(map_data=None,
             zoom = False
 
     if 'astro' in projection_words:
-        if zoom:
+        includes_poles = skycoords is not None and np.any(np.abs(skycoords.dec.degree) > 89)
+        if zoom and not includes_poles:
             projection = 'gnomonic'
         else:
             projection = 'mollweide'
@@ -1009,7 +1014,7 @@ def plot_map(map_data=None,
         contour_values = contour_values.astype(float, copy=True)
         contour_values[contour_values <= 0.0] = np.nan
 
-    return healpix.plot(values, level=level, pixs=pixs, skycoords=skycoords, contour_values=contour_values, plot_properties={
+    fig = healpix.plot(values, level=level, pixs=pixs, skycoords=skycoords, contour_values=contour_values, plot_properties={
         'galactic': galactic,
         'projection': projection,
         'zoom': zoom,
@@ -1040,8 +1045,16 @@ def plot_map(map_data=None,
         'milkyway': milkyway,
         'milkyway_width': milkyway_width,
         'ecliptic': ecliptic,
-        'ecliptic_width': ecliptic_width
+        'ecliptic_width': ecliptic_width,
+        'colors': colors,
+        'fontsize': fontsize,
     })
+
+
+    if return_fig:
+        return fig
+
+    plt.show()
 
 def save_map(config, map_data, filename=None, overwrite=False):
     if filename is None:

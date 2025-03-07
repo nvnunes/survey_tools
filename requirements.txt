@@ -9,7 +9,7 @@ compress_pickle
 tabulate
 astropy-healpix
 joblib
-skyproj
+skyproj>=2.0.0
 photutils
 dust_extinction
 dustmaps
