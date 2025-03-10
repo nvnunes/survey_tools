@@ -6,6 +6,7 @@
 
 import copy
 from logging import warning
+import os
 import matplotlib as mpl
 from matplotlib import pyplot as plt
 from mpl_toolkits.axisartist import angle_helper

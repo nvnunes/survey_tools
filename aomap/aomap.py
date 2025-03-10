@@ -664,10 +664,10 @@ def _get_map_title(key, ao_system=None):
             title = 'NGS Count'
         case _ if key.startswith('ngs-density'):
             title = 'NGS Density'
-        case _ if key.startswith('ngs-pix'):
-            title = 'NGS Pix'
         case _ if key.startswith('ngs-pix-density'):
             title = 'NGS Pix Density'
+        case _ if key.startswith('ngs-pix'):
+            title = 'NGS Pix'
         case _ if key.startswith('ao-friendly'):
             title = 'AO-Friendly Areas'
         case _:
@@ -721,7 +721,10 @@ def _read_FITS_single_column_values(config, hdu, level, key, ao_system):
         case _:
             field = _get_field_from_key(key)
             if 'DENSITY' in field and key != 'model-density':
-                field = field.replace('DENSITY', 'COUNT')
+                if 'PIX' in field:
+                    field = field.replace('_DENSITY', '')
+                else:
+                    field = field.replace('DENSITY', 'COUNT')
                 factor = 1/level_area
                 is_density = True
             else:
@@ -789,7 +792,7 @@ def get_map_data(config, map_level, key, level=None, pixs=None, coords=(), allow
     if pixs is not None and not (isinstance(pixs, list) or isinstance(pixs, np.ndarray)):
         pixs = [pixs]
 
-    ao_key = next((prefix for prefix in ['ngs-count', 'ngs-pix', 'ngs-density', 'ao-friendly'] if f"{prefix}-" in key), None)
+    ao_key = next((prefix for prefix in ['ao-friendly', 'ngs-density', 'ngs-pix-density', 'ngs-count', 'ngs-pix'] if f"{prefix}-" in key), None)
     if ao_key is not None:
         ao_system_name = key.replace(f"{ao_key}-",'')
         ao_system = next((system for system in config.ao_systems if system['name'] == ao_system_name), None)
@@ -872,7 +875,7 @@ def get_map_data(config, map_level, key, level=None, pixs=None, coords=(), allow
     map_data.unit = unit
     map_data.num_format = num_format
     map_data.norm = _get_map_norm(key)
-    map_data.title = _get_map_title(key)
+    map_data.title = _get_map_title(key, ao_system)
     return map_data
 
 def get_map_table(config, map_level, key, level=None, pixs=None, coords=()):
