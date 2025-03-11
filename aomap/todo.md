@@ -29,6 +29,8 @@ Phase 1:
     - reasonably low dust extinction
     - reasonably low zodiacal light emission
     - few very bright stars
+1. Plot wide spectroscopic surveys (Euclid, DESI) and maybe other imaging surveys (LSST, UNIONS, DECaLS, BOSS, DES, BASS+MzLS)
+1. consider using dust extinction cut of 0.3 instead of 0.2 to match Damjanov
 
 Phase 2:
 1. Find n-star asterisms in each outer pix

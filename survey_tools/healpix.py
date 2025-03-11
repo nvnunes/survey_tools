@@ -240,6 +240,13 @@ def plot(values, level=None, pixs=None, skycoords=None, contour_values=None, plo
                 linestyle='-'
             )
 
+        if plot_properties.get('surveys', None) is not None:
+            for survey in plot_properties['surveys']:
+                _draw_survey(survey, **plot_properties)
+
+        if plot_properties.get('points', None) is not None:
+            _draw_points(**plot_properties)
+
         if plot_properties.get('tissot', False):
             sp.tissot_indicatrices()
 
@@ -444,6 +451,16 @@ def _set_default_plot_properties(values, contour_values, plot_properties=None):
 
         if 'contour_levels' not in plot_properties:
             plot_properties['contour_levels'] = None
+
+    # Surveys
+    if plot_properties.get('surveys', None) is not None:
+        if not isinstance(plot_properties['surveys'], list):
+            plot_properties['surveys'] = [plot_properties['surveys']]
+
+    # Points
+    if plot_properties.get('points', None) is not None:
+        if isinstance(plot_properties['points'], list) and not all(isinstance(i, list) for i in plot_properties['points']):
+            plot_properties['points'] = [plot_properties['points']]
 
     return plot_properties
 
@@ -766,6 +783,109 @@ def _draw_ecliptic(
                 lat = ec.fk5.dec.degree
 
             sp.plot(lon, lat, linewidth=1.0, color=color, linestyle='--', **kwargs)
+
+def _draw_survey(
+        filename,
+        sp = None,
+        reverse=True,
+        edgecolor='red',
+        linestyle='solid',
+        **kwargs # pylint: disable=unused-argument
+    ):
+    data = np.genfromtxt(filename, names=['lon', 'lat', 'poly'])
+    for p in np.unique(data['poly']):
+        poly = data[data['poly'] == p]
+        lon = poly['lon'][::-1] if reverse else poly['lon']
+        lon = (lon + 180) % 360 - 180
+        lat = poly['lat'][::-1] if reverse else poly['lat']
+
+        sp.draw_polygon(lon, lat, edgecolor=edgecolor, linestyle=linestyle)
+
+def _draw_points(
+        points=None,
+        galactic=False,
+        projection='cartesian',
+        rotation=None,
+        **kwargs # pylint: disable=unused-argument
+    ):
+
+    if points == None:
+        return
+
+    for p in points:
+        if isinstance(p, np.ndarray):
+            points_ra_dec = p
+        elif isinstance(p, list) and len(p) >= 1:
+            points_ra_dec = np.asarray(p[0])
+        else:
+            points_ra_dec = None
+
+        if points_ra_dec is not None and len(points_ra_dec) > 0 and points_ra_dec.shape[1] >= 2:
+            if points_ra_dec.shape[1] >= 3 and isinstance(points_ra_dec[0, 2], str):
+                labels = points_ra_dec[:, 2]
+                points_ra_dec = points_ra_dec[:, 0:2].astype(float)
+            else:
+                labels = None
+
+            ax = plt.gca()
+
+            if projection == 'cartesian':
+                xlim = np.sort(ax.get_xlim())
+                ylim = np.sort(ax.get_ylim())
+            else:
+                xlim = np.sort(np.rad2deg(ax.get_xlim()))
+                ylim = np.sort(np.rad2deg(ax.get_ylim()))
+
+            xlim += rotation
+            tmp_ra = ((points_ra_dec[:,0] + 180) % 360 - 180) + rotation
+            points_filter = (tmp_ra >= xlim[0]) & (tmp_ra <= xlim[1]) & (points_ra_dec[:,1] >= ylim[0]) & (points_ra_dec[:,1] <= ylim[1])
+
+            if np.any(points_filter):
+                if isinstance(p, list) and len(p) >= 2 and isinstance(p[1], dict):
+                    scatter_options = p[1]
+                else:
+                    scatter_options = {}
+
+                if 's' not in scatter_options:
+                    scatter_options['s'] = 10
+                if 'color' not in scatter_options and 'c' not in scatter_options and 'facecolor' not in scatter_options and 'fc' not in scatter_options and 'edgecolor' not in scatter_options and 'ec' not in scatter_options:
+                    scatter_options['color'] = 'r'
+                if 'marker' not in scatter_options:
+                    scatter_options['marker'] = 'o'
+
+                if labels is not None:
+                    if 'color' in scatter_options and scatter_options['color'] != 'none':
+                        label_color = scatter_options['color']
+                    elif 'c' in scatter_options and scatter_options['c'] != 'none':
+                        label_color = scatter_options['c']
+                    elif 'facecolor' in scatter_options and scatter_options['facecolor'] != 'none':
+                        label_color = scatter_options['facecolor']
+                    elif 'fc' in scatter_options and scatter_options['fc'] != 'none':
+                        label_color = scatter_options['fc']
+                    elif 'edgecolor' in scatter_options and scatter_options['edgecolor'] != 'none':
+                        label_color = scatter_options['edgecolor']
+                    elif 'ec' in scatter_options and scatter_options['ec'] != 'none':
+                        label_color = scatter_options['ec']
+                    else:
+                        label_color = 'r'
+
+                    label_space = 0.015 * np.diff(xlim)
+
+                if galactic:
+                    points_icrs = SkyCoord(ra=points_ra_dec[:,0]*u.degree, dec=points_ra_dec[:,1]*u.degree, frame='icrs')
+                    plt.scatter(points_icrs.galactic.l.degree[points_filter], points_icrs.galactic.b.degree[points_filter], **scatter_options)
+                    if labels is not None:
+                        for i, label in enumerate(labels):
+                            if not points_filter[i]:
+                                continue
+                            plt.text(points_icrs.galactic.l.degree[i]+label_space, points_icrs.galactic.b.degree[i], label, color=label_color, fontsize=8, ha='right')
+                else:
+                    plt.scatter(points_ra_dec[points_filter,0], points_ra_dec[points_filter,1], **scatter_options)
+                    if labels is not None:
+                        for i, label in enumerate(labels):
+                            if not points_filter[i]:
+                                continue
+                            plt.text(points_ra_dec[i, 0]+label_space, points_ra_dec[i, 1], label, color=label_color, fontsize=8, ha='right')
 
 def _draw_cbar(
         sp=None,

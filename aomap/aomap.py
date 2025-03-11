@@ -911,6 +911,8 @@ def plot_map(map_data=None,
             contour_cmap=None,             # contour colormap
             contour_norm=None,             # contour normalization
             contour_levels=None,           # contour levels
+            points=None,                   # plot points over map
+            surveys=None,                  # plot survey outlines
             cbar=True,                     # display the colorbar
             cbar_ticks=None,               # colorbar ticks
             cbar_format=None,              # colorbar number format
@@ -1017,6 +1019,15 @@ def plot_map(map_data=None,
         contour_values = contour_values.astype(float, copy=True)
         contour_values[contour_values <= 0.0] = np.nan
 
+    if surveys is not None:
+        for i, survey in enumerate(surveys):
+            if not os.path.isfile(survey):
+                survey_file = f'../data/surveys/{survey}-poly.txt'
+                if os.path.isfile(survey_file):
+                    surveys[i] = survey_file
+                else:
+                    raise AOMapException('Unrecognized survey')
+
     fig = healpix.plot(values, level=level, pixs=pixs, skycoords=skycoords, contour_values=contour_values, plot_properties={
         'galactic': galactic,
         'projection': projection,
@@ -1033,6 +1044,8 @@ def plot_map(map_data=None,
         'contour_cmap': contour_cmap,
         'contour_norm': contour_norm,
         'contour_levels': contour_levels,
+        'surveys': surveys,
+        'points': points,
         'grid': grid,
         'grid_longitude': grid_longitude,
         'cbar': cbar,
@@ -1052,7 +1065,6 @@ def plot_map(map_data=None,
         'colors': colors,
         'fontsize': fontsize,
     })
-
 
     if return_fig:
         return fig
