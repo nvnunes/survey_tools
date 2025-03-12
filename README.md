@@ -38,6 +38,7 @@ survey_tools/
 ├── docs/                     # Documentation and references (under development)
 ├── examples/                 # Jupyter notebooks demonstrating tool usage
 │   ├── healpix.ipynb         # Working with HEALpix
+│   ├── ngs.ipynb             # Finding candidate NGSs
 │   ├── read-catalog.ipynb    # Reading and processing a spectroscopic catalog
 │   ├── read-DESI.ipynb       # Reading the DESI ELG catalog (Early Data Release)
 │   ├── sky.ipynb             # Using atmospheric transmission and line rejection tools
