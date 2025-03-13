@@ -452,10 +452,28 @@ def _set_default_plot_properties(values, contour_values, plot_properties=None):
         if 'contour_levels' not in plot_properties:
             plot_properties['contour_levels'] = None
 
+        if plot_properties.get('contour_filled', None) is None:
+            plot_properties['contour_filled'] = False
+
+        if plot_properties.get('contour_colors', None) is None:
+            plot_properties['contour_colors'] = 'k'
+
+        if plot_properties.get('contour_alpha', None) is None:
+            plot_properties['contour_alpha'] = 0.25
+
     # Surveys
     if plot_properties.get('surveys', None) is not None:
         if not isinstance(plot_properties['surveys'], list):
             plot_properties['surveys'] = [plot_properties['surveys']]
+
+        if plot_properties.get('survey_color', None) is None:
+            plot_properties['survey_color'] = 'red'
+
+        if plot_properties.get('survey_linewidth', None) is None:
+            plot_properties['survey_linewidth'] = 2.0
+
+        if plot_properties.get('survey_linestyle', None) is None:
+            plot_properties['survey_linestyle'] = 'solid'
 
     # Points
     if plot_properties.get('points', None) is not None:
@@ -558,10 +576,14 @@ def _draw_map(values, level, pixs, skycoords,
 def _draw_contour_map(sp, values,
         ax = None,
         projection='cartesian',
+        rotation=None,
         xsize=1000,
         cmap=None,
         norm=None,
         contour_levels=None,
+        contour_filled=False,
+        contour_colors=None,
+        contour_alpha=None,
         **kwargs # pylint: disable=unused-argument
     ):
 
@@ -582,16 +604,31 @@ def _draw_contour_map(sp, values,
     pixs = hp.lonlat_to_healpix(Longitude(lon, unit=u.degree), Latitude(lat, unit=u.degree))
     values_raster = values[pixs]
 
-    ax.contour(lon, lat, np.ma.array(values_raster, mask=np.isnan(values_raster)),
-        levels=contour_levels,
-        transform=ax.projection if projection != 'cartesian' else None,
-        cmap=cmap,
-        colors='k' if cmap is None else None,
-        norm=norm,
-        vmin=norm.vmin if norm is None else None,
-        vmax=norm.vmax if norm is None else None,
-        linewidths=0.5
-    )
+    if rotation is not None:
+        lon = (lon - rotation + 180) % 360 - 180
+
+    if contour_filled:
+        ax.contourf(lon, lat, np.ma.array(values_raster, mask=np.isnan(values_raster)),
+            levels=contour_levels,
+            transform=ax.projection if projection != 'cartesian' else None,
+            cmap=cmap,
+            colors=contour_colors if cmap is None else None,
+            norm=norm,
+            vmin=norm.vmin if norm is None else None,
+            vmax=norm.vmax if norm is None else None,
+            alpha=contour_alpha
+        )
+    else:
+        ax.contour(lon, lat, np.ma.array(values_raster, mask=np.isnan(values_raster)),
+            levels=contour_levels,
+            transform=ax.projection if projection != 'cartesian' else None,
+            cmap=cmap,
+            colors='k' if cmap is None else None,
+            norm=norm,
+            vmin=norm.vmin if norm is None else None,
+            vmax=norm.vmax if norm is None else None,
+            linewidths=0.5
+        )
 
 def _draw_grid(
         sp=None,
@@ -787,19 +824,19 @@ def _draw_ecliptic(
 def _draw_survey(
         filename,
         sp = None,
-        reverse=True,
-        edgecolor='red',
-        linestyle='solid',
+        survey_color='red',
+        survey_linewidth=2.0,
+        survey_linestyle='solid',
         **kwargs # pylint: disable=unused-argument
     ):
+
     data = np.genfromtxt(filename, names=['lon', 'lat', 'poly'])
+
     for p in np.unique(data['poly']):
         poly = data[data['poly'] == p]
-        lon = poly['lon'][::-1] if reverse else poly['lon']
-        lon = (lon + 180) % 360 - 180
-        lat = poly['lat'][::-1] if reverse else poly['lat']
-
-        sp.draw_polygon(lon, lat, edgecolor=edgecolor, linestyle=linestyle)
+        lon = (poly['lon'] + 180) % 360 - 180
+        lat = poly['lat']
+        sp.draw_polygon(lon, lat, edgecolor=survey_color, linestyle=survey_linestyle, linewidth=survey_linewidth)
 
 def _draw_points(
         points=None,
@@ -809,7 +846,7 @@ def _draw_points(
         **kwargs # pylint: disable=unused-argument
     ):
 
-    if points == None:
+    if points is None:
         return
 
     for p in points:

@@ -911,8 +911,14 @@ def plot_map(map_data=None,
             contour_cmap=None,             # contour colormap
             contour_norm=None,             # contour normalization
             contour_levels=None,           # contour levels
+            contour_filled=False,          # countour is filled
+            contour_colors=None,           # contour colors
+            contour_alpha=None,            # contour transparency
             points=None,                   # plot points over map
             surveys=None,                  # plot survey outlines
+            survey_color=None,             # survey line color
+            survey_linewidth=None,         # survey line width
+            survey_linestyle=None,         # survey line style
             cbar=True,                     # display the colorbar
             cbar_ticks=None,               # colorbar ticks
             cbar_format=None,              # colorbar number format
@@ -1044,7 +1050,13 @@ def plot_map(map_data=None,
         'contour_cmap': contour_cmap,
         'contour_norm': contour_norm,
         'contour_levels': contour_levels,
+        'contour_filled': contour_filled,
+        'contour_colors': contour_colors,
+        'contour_alpha': contour_alpha,
         'surveys': surveys,
+        'survey_color': survey_color,
+        'survey_linewidth': survey_linewidth,
+        'survey_linestyle': survey_linestyle,
         'points': points,
         'grid': grid,
         'grid_longitude': grid_longitude,

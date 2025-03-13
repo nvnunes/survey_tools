@@ -25,4 +25,4 @@ ao_systems:
 exclude_min_galactic_latitude: 0.0
 
 max_dust_extinction: 0.2
-min_ecliptic_latitude: 20.0
+min_ecliptic_latitude: 15.0

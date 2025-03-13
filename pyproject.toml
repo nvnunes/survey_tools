@@ -27,7 +27,8 @@ dependencies = [
     "skyproj >= 2.0.0",
     "photutils",
     "dust_extinction",
-    "dustmaps"
+    "dustmaps",
+    "mocpy"
 ]
 dynamic = ["version"]
 

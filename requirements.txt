@@ -13,3 +13,4 @@ skyproj>=2.0.0
 photutils
 dust_extinction
 dustmaps
+mocpy
