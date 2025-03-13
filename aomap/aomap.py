@@ -107,9 +107,6 @@ def read_config(config_or_filename):
     if not hasattr(config, 'ao_systems'):
         config.ao_systems = {}
 
-    if not hasattr(config, 'exclude_min_galactic_latitude'):
-        config.exclude_min_galactic_latitude = 0.0
-
     if not hasattr(config, 'max_dust_extinction'):
         config.max_dust_extinction = None
 
@@ -487,10 +484,6 @@ def _get_outer_excluded(outer):
 def _build_inner_data(config, mode, outer_pix, force_reload_gaia):
     galactic_coord = healpix.get_pixel_skycoord(config.outer_level, outer_pix).galactic
     excluded = False
-
-    # Exclusions that DO NOT require inner_data go here:
-    if config.exclude_min_galactic_latitude > 0:
-        excluded = np.abs(galactic_coord.b.degree) < config.exclude_min_galactic_latitude
 
     if not excluded:
         skip = False
