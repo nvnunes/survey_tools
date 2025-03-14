@@ -806,8 +806,6 @@ def _draw_ecliptic(
         lat = ec.fk5.dec.degree
 
     sp.plot(lon, lat, linewidth=linewidth, color=color, linestyle=linestyle, **kwargs)
-    # pop any labels
-    # kwargs.pop('label', None)
 
     if width > 0:
         for delta in [+width, -width]:
@@ -824,6 +822,7 @@ def _draw_ecliptic(
 def _draw_survey(
         filename,
         sp = None,
+        galactic=False,
         survey_color='red',
         survey_linewidth=2.0,
         survey_linestyle='solid',
@@ -836,6 +835,12 @@ def _draw_survey(
         poly = data[data['poly'] == p]
         lon = (poly['lon'] + 180) % 360 - 180
         lat = poly['lat']
+
+        if galactic:
+            coords = SkyCoord(ra=lon*u.degree, dec=lat*u.degree, frame='icrs')
+            lon = coords.galactic.l.degree
+            lat = coords.galactic.b.degree
+
         sp.draw_polygon(lon, lat, edgecolor=survey_color, linestyle=survey_linestyle, linewidth=survey_linewidth)
 
 def _draw_points(

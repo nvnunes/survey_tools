@@ -9,18 +9,25 @@ build_level: 1                # limit building to specific level
 build_pixs: 26                # limit building to specific pixels
 
 ao_systems:
+  - name: GNAO-Limit
+    band: R
+    mag_min:  8.0 # Vega
+    mag_max: 18.5 # Vega
+    fov: 2.0 # diameter [arcmin]
+    wfs: 3
   - name: GNAO-Nominal
     band: R
-    mag_min: 10.0
-    mag_max: 18.5
+    mag_min:  8.0 # Vega
+    mag_max: 17.0 # Vega
     fov: 2.0 # diameter [arcmin]
     wfs: 3
   - name: GNAO-Optimal
     band: R
-    mag_min: 10.0
-    mag_max: 16.5
+    mag_min:  8.0 # Vega
+    mag_max: 16.0 # Vega
     fov: 2.0 # diameter [arcmin]
     wfs: 3
 
-max_dust_extinction: 0.2
+max_bright_star_magnitude: 4.0
+max_dust_extinction: 0.3
 min_ecliptic_latitude: 15.0

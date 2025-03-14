@@ -100,8 +100,7 @@ def read_config(config_or_filename):
 
     if not hasattr(config, 'build_pixs'):
         config.build_pixs = None
-
-    if not isinstance(config.build_pixs, list):
+    elif not isinstance(config.build_pixs, list):
         config.build_pixs = [config.build_pixs]
 
     if not hasattr(config, 'ao_systems'):

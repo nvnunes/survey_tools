@@ -11,26 +11,17 @@ DONE Phase 0:
 Phase 1:
 1. DONE Load dust map and compute extinction per inner pixel
 1. DONE Optionally draw contours of extinction on map
-1. DONE Load Zodiacal light model and study emission versus ecliptic latitude
-   (https://cosmoglobe.github.io/zodipy/)
+1. DONE Load Zodiacal light model and study emission versus ecliptic latitude (https://cosmoglobe.github.io/zodipy/)
+1. DONE Load outline of EWS and plot position of 3D-HST fields
+1. DONE Optionally draw outlines of regions on map
+1. DONE Plot wide spectroscopic surveys (Euclid, DESI) 
 1. Count number of very bright stars
-1. Load regions covered by important surveys:
-    - Euclid EWS
-    - Important extra-galactic fields
-1. Optionally draw outlines of regions on map
-1. Create table with average outer pix values by extra-galactic fields
 1. Find patches of sky where:
-    - higher probability of a nominal NGS asterism (NGS density = 3/FOV / factor)
-    - good probability of a single bright NGS (NGS density = 1/FOV / factor)
-        = where factor = 1 meaning 100% of healpix exceeds above limits on average
-        = try increase (corresponding lower % of healpix) if:
-            - nothing found (i.e. trade-off)
-            - remaining healpix at unreasonably low galactic latitude
-    - reasonably low dust extinction
-    - reasonably low zodiacal light emission
+    - DONE reasonably high stellar density
+    - DONE reasonably low dust extinction (Av < 0.3)
+    - DONE reasonably low zodiacal light emission (cut on ecliptic latitude)
     - few very bright stars
-1. Plot wide spectroscopic surveys (Euclid, DESI) and maybe other imaging surveys (LSST, UNIONS, DECaLS, BOSS, DES, BASS+MzLS)
-1. consider using dust extinction cut of 0.3 instead of 0.2 to match Damjanov
+1. Update AO fields based on Av < 0.3
 
 Phase 2:
 1. Find n-star asterisms in each outer pix
