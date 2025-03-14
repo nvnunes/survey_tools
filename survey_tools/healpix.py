@@ -241,8 +241,7 @@ def plot(values, level=None, pixs=None, skycoords=None, contour_values=None, plo
             )
 
         if plot_properties.get('surveys', None) is not None:
-            for survey in plot_properties['surveys']:
-                _draw_survey(survey, **plot_properties)
+            _draw_surveys(**plot_properties)
 
         if plot_properties.get('points', None) is not None:
             _draw_points(**plot_properties)
@@ -463,17 +462,8 @@ def _set_default_plot_properties(values, contour_values, plot_properties=None):
 
     # Surveys
     if plot_properties.get('surveys', None) is not None:
-        if not isinstance(plot_properties['surveys'], list):
+        if isinstance(plot_properties['surveys'], list) and not all(isinstance(i, list) for i in plot_properties['surveys']):
             plot_properties['surveys'] = [plot_properties['surveys']]
-
-        if plot_properties.get('survey_color', None) is None:
-            plot_properties['survey_color'] = 'red'
-
-        if plot_properties.get('survey_linewidth', None) is None:
-            plot_properties['survey_linewidth'] = 2.0
-
-        if plot_properties.get('survey_linestyle', None) is None:
-            plot_properties['survey_linestyle'] = 'solid'
 
     # Points
     if plot_properties.get('points', None) is not None:
@@ -819,29 +809,45 @@ def _draw_ecliptic(
 
             sp.plot(lon, lat, linewidth=1.0, color=color, linestyle='--', **kwargs)
 
-def _draw_survey(
-        filename,
+def _draw_surveys(
         sp = None,
+        surveys = None,
         galactic=False,
-        survey_color='red',
-        survey_linewidth=2.0,
-        survey_linestyle='solid',
         **kwargs # pylint: disable=unused-argument
     ):
 
-    data = np.genfromtxt(filename, names=['lon', 'lat', 'poly'])
+    if surveys is None:
+        return
 
-    for p in np.unique(data['poly']):
-        poly = data[data['poly'] == p]
-        lon = (poly['lon'] + 180) % 360 - 180
-        lat = poly['lat']
+    for survey in surveys:
+        filename = survey[0]
+        data = np.genfromtxt(filename, names=['lon', 'lat', 'poly'])
 
-        if galactic:
-            coords = SkyCoord(ra=lon*u.degree, dec=lat*u.degree, frame='icrs')
-            lon = coords.galactic.l.degree
-            lat = coords.galactic.b.degree
+        for p in np.unique(data['poly']):
+            poly = data[data['poly'] == p]
+            lon = (poly['lon'] + 180) % 360 - 180
+            lat = poly['lat']
 
-        sp.draw_polygon(lon, lat, edgecolor=survey_color, linestyle=survey_linestyle, linewidth=survey_linewidth)
+            if galactic:
+                coords = SkyCoord(ra=lon*u.degree, dec=lat*u.degree, frame='icrs')
+                lon = coords.galactic.l.degree
+                lat = coords.galactic.b.degree
+
+            if len(survey) > 1:
+                styles = survey[1]
+            else:
+                styles = {}
+
+            if styles.get('edgecolor', None) is None:
+                styles['edgecolor'] = 'red'
+
+            if styles.get('linewidth', None) is None:
+                styles['linewidth'] = 2.0
+
+            if styles.get('linestyle', None) is None:
+                styles['linestyle'] = 'solid'
+
+            sp.draw_polygon(lon, lat, **styles)
 
 def _draw_points(
         points=None,

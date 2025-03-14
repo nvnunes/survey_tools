@@ -908,9 +908,6 @@ def plot_map(map_data=None,
             contour_alpha=None,            # contour transparency
             points=None,                   # plot points over map
             surveys=None,                  # plot survey outlines
-            survey_color=None,             # survey line color
-            survey_linewidth=None,         # survey line width
-            survey_linestyle=None,         # survey line style
             cbar=True,                     # display the colorbar
             cbar_ticks=None,               # colorbar ticks
             cbar_format=None,              # colorbar number format
@@ -1019,10 +1016,20 @@ def plot_map(map_data=None,
 
     if surveys is not None:
         for i, survey in enumerate(surveys):
-            if not os.path.isfile(survey):
-                survey_file = f'../data/surveys/{survey}-poly.txt'
+            if isinstance(survey, str):
+                name_or_filename = survey
+            elif isinstance(survey, list):
+                name_or_filename = survey[0]
+            else:
+                continue
+
+            if not os.path.isfile(name_or_filename):
+                survey_file = f'../data/surveys/{name_or_filename}-poly.txt'
                 if os.path.isfile(survey_file):
-                    surveys[i] = survey_file
+                    if isinstance(survey, str):
+                        surveys[i] = survey_file
+                    else:
+                        survey[0] = survey_file
                 else:
                     raise AOMapException('Unrecognized survey')
 
@@ -1046,9 +1053,6 @@ def plot_map(map_data=None,
         'contour_colors': contour_colors,
         'contour_alpha': contour_alpha,
         'surveys': surveys,
-        'survey_color': survey_color,
-        'survey_linewidth': survey_linewidth,
-        'survey_linestyle': survey_linestyle,
         'points': points,
         'grid': grid,
         'grid_longitude': grid_longitude,
