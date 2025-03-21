@@ -14,3 +14,4 @@ photutils
 dust_extinction
 dustmaps
 mocpy
+shapely

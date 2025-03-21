@@ -28,7 +28,8 @@ dependencies = [
     "photutils",
     "dust_extinction",
     "dustmaps",
-    "mocpy"
+    "mocpy",
+    "shapely"
 ]
 dynamic = ["version"]
 

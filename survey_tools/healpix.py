@@ -6,7 +6,6 @@
 
 import copy
 from logging import warning
-import os
 import matplotlib as mpl
 from matplotlib import pyplot as plt
 from mpl_toolkits.axisartist import angle_helper
@@ -26,18 +25,35 @@ def _get_nside(level):
     return 2**level
 
 def get_npix(level):
-    return healpix.nside_to_npix(_get_nside(level))
+    return 12 * 4**level
 
 def get_level(npix):
     if is_npix_valid(npix):
         return int(np.log2(np.sqrt(npix/12.0)))
     return None
 
+def get_level_with_area(area, round_type='down'): # assumes arcsec**2 if not a Quantity
+    if not isinstance(area, u.Quantity):
+        area = area * u.arcsec**2
+
+    level = np.log2(4*np.pi * (180.0/np.pi)**2 / 12 / area.to(u.deg**2).value) / 2.0
+
+    match round_type:
+        case 'up':
+            return np.ceil(level).astype(int)
+        case 'down':
+            return np.floor(level).astype(int)
+        case _:
+            return np.round(level).astype(int)
+
+def get_level_with_resolution(resolution, round_type=None):
+    return get_level_with_area(resolution**2, round_type)
+
 def get_area(level):
-    return healpix.nside_to_pixel_area(_get_nside(level))
+    return 4*np.pi * (180.0/np.pi)**2 / get_npix(level) * 3600.0**2 * u.arcsec**2
 
 def get_resolution(level):
-    return healpix.nside_to_pixel_resolution(_get_nside(level))
+    return np.sqrt(get_area(level))
 
 def is_npix_valid(npix):
     nside = np.sqrt(npix/12.0)
@@ -113,8 +129,8 @@ def get_parent_pixel(level, pix, outer_level):
         raise HealpixException('Outer Level must be smaller than inner level')
     return pix // 4**(level - outer_level)
 
-def get_neighbours(level, pix):
-    return healpix.neighbours(pix, _get_nside(level), order='nested')
+def get_neighbours(level, pixs):
+    return healpix.neighbours(pixs, _get_nside(level), order='nested')
 
 def get_subpixel_npix(outer_level, inner_level):
     return 4**(inner_level - outer_level)
@@ -125,17 +141,21 @@ def _get_subpixels_min_max(outer_level, outer_pix, inner_level):
     max_pix = min_pix + inner_pixels_per_outer_pixel
     return (min_pix, max_pix)
 
-def get_subpixel_indexes(level, pix, inner_level, outer_level):
+def get_subpixel_indexes(level, pixs, inner_level, outer_level):
     if level <= outer_level:
         raise HealpixException('level must be larger than outer level')
     if level > inner_level:
         raise HealpixException('level must be smaller than inner level')
 
-    parent_outer_pix = get_parent_pixel(level, pix, outer_level)
-    (outer_start_pixel, _) = _get_subpixels_min_max(outer_level, parent_outer_pix, inner_level)
-    (start_pixel, stop_pixel) = _get_subpixels_min_max(level, pix, inner_level)
+    all_sub_pix = []
+    for pix in pixs:
+        parent_outer_pix = get_parent_pixel(level, pix, outer_level)
+        (outer_start_pixel, _) = _get_subpixels_min_max(outer_level, parent_outer_pix, inner_level)
+        (start_pixel, stop_pixel) = _get_subpixels_min_max(level, pix, inner_level)
+        subpixs = np.arange(start = start_pixel - outer_start_pixel, stop = stop_pixel - outer_start_pixel)
+        all_sub_pix.append(subpixs)
 
-    return np.arange(start = start_pixel - outer_start_pixel, stop = stop_pixel - outer_start_pixel)
+    return np.concatenate(all_sub_pix)
 
 def get_subpixels(outer_level, outer_pix, inner_level):
     if inner_level <= outer_level:
@@ -243,8 +263,17 @@ def plot(values, level=None, pixs=None, skycoords=None, contour_values=None, plo
         if plot_properties.get('surveys', None) is not None:
             _draw_surveys(**plot_properties)
 
+        if plot_properties.get('lines', None) is not None:
+            _draw_lines(**plot_properties)
+
         if plot_properties.get('points', None) is not None:
             _draw_points(**plot_properties)
+
+        if plot_properties.get('stars', None) is not None:
+            _draw_stars(**plot_properties)
+
+        if plot_properties.get('asterisms', None) is not None:
+            _draw_asterisms(**plot_properties)
 
         if plot_properties.get('tissot', False):
             sp.tissot_indicatrices()
@@ -364,7 +393,7 @@ def _set_default_plot_properties(values, contour_values, plot_properties=None):
     if plot_properties.get('grid_longitude', None) is None:
         plot_properties['grid_longitude'] = 'degrees'
 
-     # Colors
+    # Colors
     color_defaults = {
         'background': 'white',
         'badvalue': 'gray',
@@ -384,7 +413,7 @@ def _set_default_plot_properties(values, contour_values, plot_properties=None):
     else:
         plot_properties['colors'] = color_defaults
 
-   # Fonts
+    # Fonts
     fontsize_defaults = {
         'xlabel': 12,
         'ylabel': 12,
@@ -393,7 +422,7 @@ def _set_default_plot_properties(values, contour_values, plot_properties=None):
         'ytick_label': 10,
         'cbar_label': 12,
         'cbar_tick_label': 10,
-        'boundaries_label': 12,
+        'boundaries_label': 10,
         'boundaries_label_small': max(8, 12.0-(plot_properties.get('boundaries_level') or 0)/2.0)
     }
 
@@ -514,6 +543,9 @@ def _draw_map(values, level, pixs, skycoords,
 ):
     if values is None:
         return
+
+    if len(values) < 2:
+        raise HealpixException('multiple values required')
 
     if plot_type not in ['mesh', 'contour']:
         raise HealpixException('Invalid map type')
@@ -709,10 +741,8 @@ def _draw_grid(
 def _draw_boundaries(
         ax=None,
         sp=None,
-        projection='cartesian',
-        mapcoord='C',
+        galactic=False,
         zoom=False,
-        rotation=0.0,
         boundaries_level=None,
         boundaries_pixs=None,
         colors=None,
@@ -722,23 +752,31 @@ def _draw_boundaries(
     if boundaries_level is None:
         return
 
+    max_count = 250
+
     if boundaries_pixs is not None and not isinstance(boundaries_pixs, list) and not isinstance(boundaries_pixs, np.ndarray):
         boundaries_pixs = [boundaries_pixs]
 
-    if projection == 'cartesian':
-        xlim = np.sort(ax.get_xlim())
-        ylim = np.sort(ax.get_ylim())
-    else:
-        xlim = np.sort(np.rad2deg(ax.get_xlim()))
-        ylim = np.sort(np.rad2deg(ax.get_ylim()))
-
-    step = max(1,2**(7-boundaries_level)) # level 0 = 128, level 1 = 64, level 2 = 32, ...
+    step = 2**max(0,7-boundaries_level) # level 0 = 128, level 1 = 64, level 2 = 32, ...
     pixs = np.arange(get_npix(boundaries_level))
     skycoords = get_pixel_skycoord(boundaries_level, pixs)
+
+    [xlim, ylim] = np.sort(sp.crs.transform_points(ax.get_xlim(), ax.get_ylim(), inverse=True).transpose())
+    xlim = (xlim + 360) % 360
+
+    if zoom:
+        resolution = get_resolution(boundaries_level).to(u.deg).value
+        mean_dec = np.mean(ylim)
+        dra = resolution * 2 / np.cos(np.deg2rad(mean_dec))
+        ddec = resolution * 2
+        pixs_filter  = (skycoords.ra.degree >= xlim[0]-dra) & (skycoords.ra.degree <= xlim[1]+dra) & (skycoords.dec.degree >= ylim[0]-ddec) & (skycoords.dec.degree <= ylim[1]+ddec)
+        pixs = pixs[pixs_filter]
+        skycoords = skycoords[pixs_filter]
+
     boundaries = get_boundaries_skycoord(boundaries_level, pixs=pixs, step=step)
     boundaries_label_fontsize = fontsize['boundaries_label_small'] if not zoom else fontsize['boundaries_label']
 
-    if mapcoord == 'G':
+    if galactic:
         boundaries_lon = boundaries.galactic.l.to(u.degree).value
         boundaries_lat = boundaries.galactic.b.to(u.degree).value
         center_lon = skycoords.galactic.l.to(u.degree).value
@@ -749,9 +787,6 @@ def _draw_boundaries(
         center_lon = skycoords.ra.to(u.degree).value
         center_lat = skycoords.dec.to(u.degree).value
 
-    xlim += rotation
-
-    max_count = 250
     count = 0
     for i, pix in enumerate(pixs):
         vertices = np.vstack([boundaries_lon[i], boundaries_lat[i]]).transpose()
@@ -849,11 +884,39 @@ def _draw_surveys(
 
             sp.draw_polygon(lon, lat, **styles)
 
+def _draw_lines(
+        lines=None,
+        **kwargs # pylint: disable=unused-argument
+    ):
+
+    if lines is None:
+        return
+
+    if not isinstance(lines, list):
+        lines = [lines]
+
+    for line in lines:
+        ra = line.pop('ra', None)
+        dec = line.pop('dec', None)
+
+        if 'color' not in line and 'c' not in line:
+            line['color'] = 'r'
+        if 'linestyle' not in line and 'ls' not in line:
+            line['linestyle'] = '-'
+        if 'linewidth' not in line and 'lw' not in line:
+            line['linewidth'] = 2.0
+
+        if ra is not None:
+            plt.axvline(ra, **line)
+        else:
+            plt.axhline(dec, **line)
+
 def _draw_points(
+        sp=None,
+        ax=None,
         points=None,
         galactic=False,
-        projection='cartesian',
-        rotation=None,
+        zoom=False,
         **kwargs # pylint: disable=unused-argument
     ):
 
@@ -868,72 +931,252 @@ def _draw_points(
         else:
             points_ra_dec = None
 
-        if points_ra_dec is not None and len(points_ra_dec) > 0 and points_ra_dec.shape[1] >= 2:
-            if points_ra_dec.shape[1] >= 3 and isinstance(points_ra_dec[0, 2], str):
-                labels = points_ra_dec[:, 2]
-                points_ra_dec = points_ra_dec[:, 0:2].astype(float)
+        if points_ra_dec is None or len(points_ra_dec) == 0:
+            continue
+
+        if points_ra_dec.ndim == 1:
+            points_ra_dec = points_ra_dec.reshape(1, -1)
+
+        if points_ra_dec.shape[1] < 2:
+            continue
+
+        if points_ra_dec.shape[1] >= 3 and isinstance(points_ra_dec[0, 2], str):
+            labels = points_ra_dec[:, 2]
+            points_ra_dec = points_ra_dec[:, 0:2].astype(float)
+        else:
+            labels = None
+
+        if zoom:
+            [xlim, ylim] = np.sort(sp.crs.transform_points(ax.get_xlim(), ax.get_ylim(), inverse=True).transpose())
+            xlim = (xlim + 360) % 360
+
+            points_filter = (points_ra_dec[:,0] >= xlim[0]) & (points_ra_dec[:,0] <= xlim[1]) & (points_ra_dec[:,1] >= ylim[0]) & (points_ra_dec[:,1] <= ylim[1])
+
+            if not np.any(points_filter):
+                return
+
+            points_ra_dec = points_ra_dec[points_filter,:]
+            labels = labels[points_filter] if labels is not None else None
+
+        if isinstance(p, list) and len(p) >= 2 and isinstance(p[1], dict):
+            scatter_options = p[1]
+        else:
+            scatter_options = {}
+
+        if 's' not in scatter_options:
+            scatter_options['s'] = 10
+        if 'color' not in scatter_options and 'c' not in scatter_options and 'facecolor' not in scatter_options and 'fc' not in scatter_options and 'edgecolor' not in scatter_options and 'ec' not in scatter_options:
+            scatter_options['color'] = 'r'
+        if 'marker' not in scatter_options:
+            scatter_options['marker'] = 'o'
+
+        if labels is not None:
+            if 'color' in scatter_options and scatter_options['color'] != 'none':
+                label_color = scatter_options['color']
+            elif 'c' in scatter_options and scatter_options['c'] != 'none':
+                label_color = scatter_options['c']
+            elif 'facecolor' in scatter_options and scatter_options['facecolor'] != 'none':
+                label_color = scatter_options['facecolor']
+            elif 'fc' in scatter_options and scatter_options['fc'] != 'none':
+                label_color = scatter_options['fc']
+            elif 'edgecolor' in scatter_options and scatter_options['edgecolor'] != 'none':
+                label_color = scatter_options['edgecolor']
+            elif 'ec' in scatter_options and scatter_options['ec'] != 'none':
+                label_color = scatter_options['ec']
             else:
-                labels = None
+                label_color = 'r'
 
-            ax = plt.gca()
+            label_space = 0.015 * np.diff(xlim) if zoom else 5.0
 
-            if projection == 'cartesian':
-                xlim = np.sort(ax.get_xlim())
-                ylim = np.sort(ax.get_ylim())
+        if galactic:
+            points_icrs = SkyCoord(ra=points_ra_dec[:,0]*u.degree, dec=points_ra_dec[:,1]*u.degree, frame='icrs')
+            plt.scatter(points_icrs.galactic.l.degree, points_icrs.galactic.b.degree, **scatter_options)
+            if labels is not None:
+                for i, label in enumerate(labels):
+                    plt.text(points_icrs.galactic.l.degree[i]+label_space, points_icrs.galactic.b.degree[i], label, color=label_color, fontsize=8, ha='right')
+        else:
+            plt.scatter(points_ra_dec[:,0], points_ra_dec[:,1], **scatter_options)
+            if labels is not None:
+                for i, label in enumerate(labels):
+                    plt.text(points_ra_dec[i, 0]+label_space, points_ra_dec[i, 1], label, color=label_color, fontsize=8, ha='right')
+
+def _draw_stars(
+        sp=None,
+        ax=None,
+        stars=None,
+        galactic=False,
+        zoom=False,
+        **kwargs # pylint: disable=unused-argument
+    ):
+
+    if stars is None:
+        return
+
+    if not isinstance(stars, Table):
+        if isinstance(stars, list) and len(stars) >= 2 and isinstance(stars[0], Table) and isinstance(stars[1], dict):
+            scatter_options = stars[1]
+            stars = stars[0]
+        else:
+            raise HealpixException('stars must be an Astropy Table')
+    else:
+        scatter_options = {}
+
+    if len(stars) == 0:
+        return
+
+    band = scatter_options.pop('band', 'R')
+    min_mag = scatter_options.pop('min_mag', 8)
+    max_mag = scatter_options.pop('max_mag', 20)
+    min_size = scatter_options.pop('min_size', 2)
+    max_size = scatter_options.pop('max_size', 50)
+
+    if max_size <= min_size:
+        raise HealpixException(f"Marker size must be > {min_size}")
+
+    if 'color' not in scatter_options and 'c' not in scatter_options and 'facecolor' not in scatter_options and 'fc' not in scatter_options and 'edgecolor' not in scatter_options and 'ec' not in scatter_options:
+        scatter_options['color'] = 'black'
+    if 'marker' not in scatter_options:
+        scatter_options['marker'] = 'o'
+
+    if zoom:
+        [xlim, ylim] = np.sort(sp.crs.transform_points(ax.get_xlim(), ax.get_ylim(), inverse=True).transpose())
+        xlim = (xlim + 360) % 360
+
+        star_filter = (stars['ra'] >= xlim[0]) & (stars['ra'] <= xlim[1]) & (stars['dec'] >= ylim[0]) & (stars['dec'] <= ylim[1])
+        star_filter &= ~np.any(np.isnan(stars['ra'])) & ~np.any(np.isnan(stars['dec'])) & ~np.any(np.isnan(stars[band]))
+
+        if not np.any(star_filter):
+            return
+
+        stars = stars[star_filter]
+
+    if min_mag - max_mag > 7:
+        mag_step = 2
+    else:
+        mag_step = 1
+
+    legend_elements = []
+    for mag in range(min_mag, max_mag + 1, mag_step):
+        scatter_options['s'] = min_size + (max_size - min_size) * (max_mag - np.maximum(min_mag, np.minimum(max_mag, mag))) / (max_mag - min_mag) + min_size
+        if mag == min_mag:
+            label = f"<={mag}"
+        elif mag == max_mag:
+            label = f">={mag}"
+        else:
+            label = f"{mag}"
+        legend_elements.append(plt.scatter([], [], label=label, **scatter_options))
+
+    ax.legend(handles=legend_elements, loc='upper right', title="Star Mag", frameon=True, edgecolor='black')
+
+    relative_sizes = (max_mag - np.maximum(min_mag, np.minimum(max_mag, stars[band]))) / (max_mag - min_mag)
+    scatter_options['s'] = min_size + (max_size - min_size) * relative_sizes
+
+    if galactic:
+        points_icrs = SkyCoord(ra=stars['ra']*u.degree, dec=stars['dec']*u.degree, frame='icrs')
+        plt.scatter(points_icrs.galactic.l.degree, points_icrs.galactic.b.degree, **scatter_options)
+    else:
+        plt.scatter(stars['ra'], stars['dec'], **scatter_options)
+
+def _draw_asterisms(
+        sp=None,
+        ax=None,
+        asterisms=None,
+        galactic=False,
+        zoom=False,
+        **kwargs # pylint: disable=unused-argument
+    ):
+
+    if asterisms is None:
+        return
+
+    if not isinstance(asterisms, Table):
+        if isinstance(asterisms, list) and len(asterisms) >= 2 and isinstance(asterisms[0], Table) and isinstance(asterisms[1], dict):
+            line_options = asterisms[1]
+            asterisms = asterisms[0]
+        else:
+            raise HealpixException('asterisms must be an Astropy Table')
+    else:
+        line_options = {}
+
+    if len(asterisms) == 0:
+        return
+
+    if 'color' not in line_options and 'c' not in line_options:
+        line_options['color'] = 'blue'
+    if 'linestyle' not in line_options and 'ls' not in line_options:
+        line_options['linestyle'] = '-'
+    if 'linewidth' not in line_options and 'lw' not in line_options:
+        line_options['linewidth'] = 1.0
+
+    fov = line_options.pop('fov', None)
+    fov_1ngs = line_options.pop('fov_1ngs', fov)
+    fov_linestyle = line_options.pop('fov_linestyle', '-')
+    fov_linewidth = line_options.pop('fov_linewidth', 1.0)
+    fov_color1 = line_options.pop('fov_color1', 'yellow')
+    fov_color2 = line_options.pop('fov_color2', 'cyan')
+    fov_color3 = line_options.pop('fov_color3', 'magenta')
+
+    if zoom:
+        [xlim, ylim] = np.sort(sp.crs.transform_points(ax.get_xlim(), ax.get_ylim(), inverse=True).transpose())
+        xlim = (xlim + 360) % 360
+
+        asterism_filter  = (asterisms['ra'] >= xlim[0]) & (asterisms['ra'] <= xlim[1]) & (asterisms['dec'] >= ylim[0]) & (asterisms['dec'] <= ylim[1])
+
+        if not np.any(asterism_filter):
+            return
+
+        asterisms = asterisms[asterism_filter]
+
+    if not isinstance(fov, u.Quantity):
+        fov = fov * u.arcsec
+    if not isinstance(fov_1ngs, u.Quantity):
+        fov_1ngs = fov_1ngs * u.arcsec
+
+    for asterism in asterisms:
+        if fov is not None:
+            ra = asterism['ra']
+            dec = asterism['dec']
+            if galactic:
+                coords = SkyCoord(ra=ra*u.degree, dec=dec*u.degree, frame='icrs')
+                ra = coords.galactic.l.degree
+                dec = coords.galactic.b.degree
+
+            if asterism['num_stars'] == 1:
+                radius = fov_1ngs.to(u.deg).value/2
             else:
-                xlim = np.sort(np.rad2deg(ax.get_xlim()))
-                ylim = np.sort(np.rad2deg(ax.get_ylim()))
+                radius = fov.to(u.deg).value/2
 
-            xlim += rotation
-            tmp_ra = ((points_ra_dec[:,0] + 180) % 360 - 180) + rotation
-            points_filter = (tmp_ra >= xlim[0]) & (tmp_ra <= xlim[1]) & (points_ra_dec[:,1] >= ylim[0]) & (points_ra_dec[:,1] <= ylim[1])
+            fov_color = fov_color1 if asterism['num_stars'] == 1 else fov_color2 if asterism['num_stars'] == 2 else fov_color3
+            sp.circle(ra, dec, radius, color=fov_color, fill=False, linestyle=fov_linestyle, linewidth=fov_linewidth)
 
-            if np.any(points_filter):
-                if isinstance(p, list) and len(p) >= 2 and isinstance(p[1], dict):
-                    scatter_options = p[1]
-                else:
-                    scatter_options = {}
+        ra1 = asterism['star1_ra']
+        dec1 = asterism['star1_dec']
+        if galactic:
+            coords = SkyCoord(ra=ra1*u.degree, dec=dec1*u.degree, frame='icrs')
+            ra1 = coords.galactic.l.degree
+            dec1 = coords.galactic.b.degree
 
-                if 's' not in scatter_options:
-                    scatter_options['s'] = 10
-                if 'color' not in scatter_options and 'c' not in scatter_options and 'facecolor' not in scatter_options and 'fc' not in scatter_options and 'edgecolor' not in scatter_options and 'ec' not in scatter_options:
-                    scatter_options['color'] = 'r'
-                if 'marker' not in scatter_options:
-                    scatter_options['marker'] = 'o'
+        if asterism['num_stars'] > 1:
+            ra2 = asterism['star2_ra']
+            dec2 = asterism['star2_dec']
+            if galactic:
+                coords = SkyCoord(ra=ra2*u.degree, dec=dec2*u.degree, frame='icrs')
+                ra2 = coords.galactic.l.degree
+                dec2 = coords.galactic.b.degree
 
-                if labels is not None:
-                    if 'color' in scatter_options and scatter_options['color'] != 'none':
-                        label_color = scatter_options['color']
-                    elif 'c' in scatter_options and scatter_options['c'] != 'none':
-                        label_color = scatter_options['c']
-                    elif 'facecolor' in scatter_options and scatter_options['facecolor'] != 'none':
-                        label_color = scatter_options['facecolor']
-                    elif 'fc' in scatter_options and scatter_options['fc'] != 'none':
-                        label_color = scatter_options['fc']
-                    elif 'edgecolor' in scatter_options and scatter_options['edgecolor'] != 'none':
-                        label_color = scatter_options['edgecolor']
-                    elif 'ec' in scatter_options and scatter_options['ec'] != 'none':
-                        label_color = scatter_options['ec']
-                    else:
-                        label_color = 'r'
+            plt.plot([ra1, ra2], [dec1, dec2], **line_options)
 
-                    label_space = 0.015 * np.diff(xlim)
-
+            if asterism['num_stars'] > 2:
+                ra3 = asterism['star3_ra']
+                dec3 = asterism['star3_dec']
                 if galactic:
-                    points_icrs = SkyCoord(ra=points_ra_dec[:,0]*u.degree, dec=points_ra_dec[:,1]*u.degree, frame='icrs')
-                    plt.scatter(points_icrs.galactic.l.degree[points_filter], points_icrs.galactic.b.degree[points_filter], **scatter_options)
-                    if labels is not None:
-                        for i, label in enumerate(labels):
-                            if not points_filter[i]:
-                                continue
-                            plt.text(points_icrs.galactic.l.degree[i]+label_space, points_icrs.galactic.b.degree[i], label, color=label_color, fontsize=8, ha='right')
-                else:
-                    plt.scatter(points_ra_dec[points_filter,0], points_ra_dec[points_filter,1], **scatter_options)
-                    if labels is not None:
-                        for i, label in enumerate(labels):
-                            if not points_filter[i]:
-                                continue
-                            plt.text(points_ra_dec[i, 0]+label_space, points_ra_dec[i, 1], label, color=label_color, fontsize=8, ha='right')
+                    coords = SkyCoord(ra=ra3*u.degree, dec=dec3*u.degree, frame='icrs')
+                    ra3 = coords.galactic.l.degree
+                    dec3 = coords.galactic.b.degree
+
+                plt.plot([ra2, ra3], [dec2, dec3], **line_options)
+                plt.plot([ra3, ra1], [dec3, dec1], **line_options)
+
 
 def _draw_cbar(
         sp=None,
@@ -962,7 +1205,12 @@ def _draw_cbar(
         pad=cbar_pad
     )
 
+    if cbar_format is not None:
+        cb.minorformatter = mpl.ticker.FormatStrFormatter(cbar_format)
+
     cb.set_label(label=cbar_unit, fontsize=fontsize['cbar_label'])
+
+    return cb
 
 def _finish_plot(
     ax=None,

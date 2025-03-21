@@ -1,6 +1,6 @@
 folder: ../data/maps
 cores: 6                      #  1: no parallelism, >1: number of cores, -1: all cores
-chunk_multiple: 100           #  0: skip chunking, chunk_size = cores * chunk_multiple = number of pixels computed between updates to disk
+chunk_multiple: 10            #  0: skip chunking, chunk_size = cores * chunk_multiple = number of pixels computed between updates to disk
 outer_level: 6                #  6: 55 arcmin resolution
 max_data_level: 9             #  9:  7 arcmin resolution
 inner_level: 14               # 14: 13 arcsec resolution
@@ -10,24 +10,51 @@ build_pixs: 26                # limit building to specific pixels
 
 ao_systems:
   - name: GNAO-Limit
+    rank: 3
     band: R
-    mag_min:  8.0 # Vega
-    mag_max: 18.5 # Vega
-    fov: 2.0 # diameter [arcmin]
-    wfs: 3
+    fov     : 120.0 # [diameter, arcsec]
+    fov_1ngs:  60.0 # [diameter, arcsec]
+    min_wfs : 2
+    max_wfs : 3
+    min_mag :   8.0 # Vega
+    nom_mag :  16.0 # Vega (nominal)
+    max_mag :  18.5 # Vega
+    min_sep :   5.0 # [arcsec]
+    max_sep : 120.0 # [arcsec]
   - name: GNAO-Nominal
+    rank: 2
     band: R
-    mag_min:  8.0 # Vega
-    mag_max: 17.0 # Vega
-    fov: 2.0 # diameter [arcmin]
-    wfs: 3
+    fov:      120.0 # [diameter, arcsec]
+    fov_1ngs:  60.0 # [diameter, arcsec]
+    min_wfs : 2
+    max_wfs : 3
+    min_mag :   8.0 # Vega
+    nom_mag :  16.0 # Vega (nominal)
+    max_mag :  17.0 # Vega
+    min_sep :   5.0 # [arcsec]
+    max_sep : 120.0 # [arcsec]
   - name: GNAO-Optimal
+    rank: 1
     band: R
-    mag_min:  8.0 # Vega
-    mag_max: 16.0 # Vega
-    fov: 2.0 # diameter [arcmin]
-    wfs: 3
+    fov:      120.0 # [diameter, arcsec]
+    fov_1ngs:  60.0 # [diameter, arcsec]
+    min_wfs : 3
+    max_wfs : 3
+    min_mag :   8.0 # Vega
+    nom_mag :  16.0 # Vega (nominal)
+    max_mag :  16.0 # Vega
+    min_sep :   5.0 # [arcsec]
+    max_sep : 120.0 # [arcsec]
+#    min_rel_sep : 0.25 # relative to max separation
+#    max_rel_sep : 1.00 # relative to max separation
+    min_rel_area: 0.50 # relative to optimal triangle area
+    max_rel_area: 4.00 # relative to optimal triangle area
 
-max_bright_star_magnitude: 4.0
-max_dust_extinction: 0.3
-min_ecliptic_latitude: 15.0
+max_dust_extinction: 0.3    # Av
+min_ecliptic_latitude: 15.0 # degree
+
+asterisms_min_galactic_latitude:  20.0  # degree
+asterisms_max_star_density:        6.0  # stars/arcmin^2
+asterisms_max_bright_star_mag:     8.0  # Vega
+asterisms_max_overlap:             0.66 # relative to area of smaller intersecting asterism
+asterisms_max_dust_extinction:     0.3  # Av
