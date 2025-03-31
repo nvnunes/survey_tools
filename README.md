@@ -18,11 +18,15 @@ Ensure you have the following software installed:
    git clone https://github.com/nvnunes/survey_tools.git
    cd survey_tools
    ```
-2. Install survey_tools locally as an editable package:
+2. Install torch (in MacOS, use Anaconda to install as pip3 may not work)
+   ```bash
+   condo install pytorch
+   ```
+3. Install survey_tools locally as an editable package:
    ```bash
    pip3 install -e path/to/survey_tools
    ```
-3. Optionally, download data files (see `data/README.txt`)
+4. Optionally, download data files (see `data/README.txt`)
 
 ## Directory Structure
 
