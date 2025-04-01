@@ -35,7 +35,7 @@ from shapely.geometry import Polygon
 #
 #########################################################################
 
-class AOSimException(Exception):
+class TessellateException(Exception):
     pass
 
 def closest_num_hex_rings(N):
@@ -47,6 +47,12 @@ def closest_num_hex_rings(N):
 
     R = (-1 + np.sqrt(1 + 4 * (N - 1) / 3)) / 2
     return int(np.round(R))  # Round to nearest integer
+
+def num_points_using_hex_rings(num_rings):
+    """
+    Calculate the number of points in a hexagonal grid with the given number of rings.
+    """
+    return 3 * num_rings * (num_rings + 1) + 1
 
 def to_polar_coordinates(points):
     """
@@ -241,8 +247,6 @@ def plot_circle_tessellation(points, cells, radius, method=None):
 
     # Plot each cell
     for poly in cells:
-        if poly.is_empty:
-            continue
         x, y = poly.exterior.xy
         ax.fill(x, y, alpha=0.3)
 
@@ -268,7 +272,7 @@ def tessellate_circle(N, radius=1.0, method='hexagon', max_iterations=1000, verb
     """
 
     if N < 5:
-        raise AOSimException('Minimum number of cells is 5')
+        raise TessellateException('Minimum number of cells is 5')
 
     if verbose:
         print('Parameters:')
@@ -314,7 +318,7 @@ def tessellate_circle_with_hexagons(num_rings, radius=1.0,max_iterations=1000, v
     """
 
     if num_rings < 1:
-        raise AOSimException('Minimum number of rings is 1')
+        raise TessellateException('Minimum number of rings is 1')
 
     N = 3*num_rings*(num_rings+1)+1
     return tessellate_circle(N, radius=radius, method='hex', max_iterations=max_iterations, verbose=verbose)
