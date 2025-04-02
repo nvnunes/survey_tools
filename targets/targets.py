@@ -879,13 +879,16 @@ def get_catalog_cutout(field, galaxy, options, filter_name,
     catalog_cutout.epoch = catalog_params.catalog_image_epoch if catalog_params.catalog_image_epoch is not None else epoch
     return catalog_cutout
 
-def get_decon_cutout(field, galaxy):
+def get_decon_cutout(field, galaxy, return_none_if_missing=False):
     if field != 'COSMOS':
         raise TargetsException('Decon on available for COSMOS')
 
     decon_path = f"{_get_data_path()}/decon/{galaxy['id']}.npy"
     if not os.path.isfile(decon_path):
-        raise TargetsException(f"Missing decon file: {decon_path}")
+        if return_none_if_missing:
+            return None
+        else:
+            raise TargetsException(f"Missing decon file: {decon_path}")
 
     image_data = np.load(decon_path)
 
@@ -1512,7 +1515,7 @@ def plot_sky_background(galaxy, lines, options, line_names=None):
 
     plot_dwavelength = max(min_wavelength_range, mid_wavelength/options['resolving_power']*8)
     plot_xrange = np.round(np.array([mid_wavelength - plot_dwavelength, mid_wavelength + plot_dwavelength])/10, 0)*10
-    plot_yrange = [0.1, 1e4]
+    plot_yrange = [1e-2, 1e4]
 
     sky_wavelengths = np.linspace(plot_xrange[0], plot_xrange[1], 1000)
     sky_background_data_low_res = sky.get_low_res_background(sky_background_data, plot_xrange, options['resolving_power'])
