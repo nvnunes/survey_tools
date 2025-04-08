@@ -14,8 +14,13 @@ from matplotlib import rc
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.interpolate import griddata, Rbf
-from tiptop.tiptop import cpuArray, baseSimulation
+from mastsel.mavisLO import MavisLO
+from mastsel.mavisPsf import Field, zeroPad
+from mastsel.mavisUtilities import congrid
+from p3.aoSystem.fourierModel import fourierModel
 from tiptop import __version__ as __tiptop_version__
+from tiptop.tiptop import cpuArray, baseSimulation
+from tiptop.tiptopUtils import arrayP3toMastsel
 import stats
 
 rc("text", usetex=False)
@@ -87,7 +92,7 @@ def run_simulation(name, base_config_filename, wavelength, zenith_angle, seeing,
         doPlot=do_plot, verbose=verbose
     )
 
-    simulation.doOverallSimulation()
+    _run_tiptop(simulation)
 
     results.psfs = np.array([cpuArray(img.sampling) for img in simulation.results])
 
@@ -105,26 +110,137 @@ def run_simulation(name, base_config_filename, wavelength, zenith_angle, seeing,
     else:
         return results
 
-def save_results(output_path, name, results):
-    output_file = f"{output_path}/{name}.pkl"
-    with open(output_file, 'wb') as f:
-        pickle.dump(results, f, protocol=pickle.HIGHEST_PROTOCOL)
+def _run_tiptop(sim: baseSimulation):
 
-def load_results(output_path_or_file_path, name=None):
-    if os.path.isfile(output_path_or_file_path):
-        output_file = output_path_or_file_path
+    if sim.LOisOn:
+        sim.configLO()
+
+    sim.results = []
+
+    # ------------------------------------------------------------------------
+    ## HO Part with P3 PSDs
+    # ------------------------------------------------------------------------
+
+    sim.fao = fourierModel( sim.fullPathFilename, calcPSF=False, verbose=sim.verbose
+                        , display=False, getPSDatNGSpositions=sim.LOisOn
+                        , computeFocalAnisoCov=False, TiltFilter=sim.LOisOn
+                        , getErrorBreakDown=sim.getHoErrorBreakDown, doComputations=False
+                        , psdExpansion=True)
+
+    if 'sensor_LO' in sim.my_data_map.keys():
+        sim.fao.my_data_map['sensor_LO']['NumberPhotons'] = sim.my_data_map['sensor_LO']['NumberPhotons']
+        sim.fao.ao.my_data_map['sensor_LO']['NumberPhotons'] = sim.my_data_map['sensor_LO']['NumberPhotons']
+    if 'sources_LO' in sim.my_data_map.keys():
+        sim.fao.my_data_map['sources_LO'] = sim.my_data_map['sources_LO']
+        sim.fao.ao.my_data_map['sources_LO'] = sim.my_data_map['sources_LO']
+        sim.fao.ao.configLOsensor()
+        sim.fao.ao.configLO()
+        sim.fao.ao.configLO_SC()
+
+    sim.fao.initComputations()
+
+    # High-order PSD caculations at the science directions and NGSs directions
+    sim.PSD           = sim.fao.PSD # in nm^2
+    sim.PSD           = sim.PSD.transpose()
+    sim.N             = sim.PSD[0].shape[0]
+    sim.nPointings    = sim.pointings.shape[1]
+    sim.nPixPSF       = sim.my_data_map['sensor_science']['FieldOfView']
+    sim.overSamp      = int(sim.fao.freq.kRef_)
+    sim.freq_range    = sim.N*sim.fao.freq.PSDstep
+    sim.pitch         = 1/sim.freq_range
+    sim.grid_diameter = sim.pitch*sim.N
+    sim.sx            = int(2*np.round(sim.tel_radius/sim.pitch))
+    # dk is the same as in p3.aoSystem.powerSpectrumDensity except that it is multiplied by 1e9 instead of 2.
+    sim.dk            = 1e9*sim.fao.freq.kcMax_/sim.fao.freq.resAO
+    # wvlRef from P3 is required to scale correctly the OL PSD from rad to m
+    sim.wvlRef        = sim.fao.freq.wvlRef
+    # Define the pupil shape
+    sim.mask = Field(sim.wvlRef, sim.N, sim.grid_diameter)
+    sim.mask.sampling = congrid(arrayP3toMastsel(sim.fao.ao.tel.pupil), [sim.sx, sim.sx])
+    sim.mask.sampling = zeroPad(sim.mask.sampling, (sim.N-sim.sx)//2)
+    # error messages for wrong pixel size
+    if sim.psInMas != cpuArray(sim.fao.freq.psInMas[0]):
+        raise ValueError(f"sensor_science.PixelScale, '{sim.psInMas}', is different from self.fao.freq.psInMas,'{cpuArray(sim.fao.freq.psInMas)}'")
+
+    if sim.fao.ao.tel.opdMap_on is not None:
+        sim.opdMap = arrayP3toMastsel(sim.fao.ao.tel.opdMap_on)
     else:
-        if name is None:
-            raise SimulateException("Name must be provided if output_path is a directory")
-        output_file = f"{output_path_or_file_path}/{name}.pkl"
+        sim.opdMap = None
 
-    if not os.path.isfile(output_file):
-        raise SimulateException(f"File {output_file} does not exist")
+    # ----------------------------------------------------------------------------
+    ## optional LO part
+    # ----------------------------------------------------------------------------
 
-    with open(output_file, 'rb') as f:
-        results = pickle.load(f)
+    if sim.LOisOn:
+        # ------------------------------------------------------------------------
+        # --- NGS PSDs, PSFs and merit functions on PSFs
+        # ------------------------------------------------------------------------
+        sim.ngsPSF()
 
-    return results
+        # ------------------------------------------------------------------------
+        # --- initialize MASTSEL MavisLO object
+        # ------------------------------------------------------------------------
+        sim.mLO = MavisLO(sim.path, sim.parametersFile, verbose=sim.verbose)
+
+        # ------------------------------------------------------------------------
+        ## total covariance matrix Ctot
+        # ------------------------------------------------------------------------
+        sim.Ctot          = sim.mLO.computeTotalResidualMatrix(np.array(sim.cartSciencePointingCoords),
+                                                                    sim.cartNGSCoords_field, sim.NGS_fluxes_field,
+                                                                    sim.LO_freqs_field,
+                                                                    sim.NGS_SR_field, sim.NGS_EE_field, sim.NGS_FWHM_mas_field,
+                                                                    aNGS_FWHM_DL_mas = sim.NGS_DL_FWHM_mas, doAll=True)
+
+        # ------------------------------------------------------------------------
+        # --- optional total focus covariance matrix Ctot
+        # ------------------------------------------------------------------------
+        if sim.addFocusError:
+            # compute focus error
+            sim.CtotFocus = sim.mLO.computeFocusTotalResidualMatrix(sim.cartNGSCoords_field, sim.Focus_fluxes_field,
+                                                                    sim.Focus_freqs_field, sim.Focus_SR_field,
+                                                                    sim.Focus_EE_field, sim.Focus_FWHM_mas_field)
+
+            sim.GF_res = np.sqrt(max(sim.CtotFocus[0], 0))
+            # add focus error to PSD using P3 FocusFilter
+            FocusFilter = sim.fao.FocusFilter()
+            FocusFilter *= 1/FocusFilter.sum()
+            for PSDho in sim.PSD:
+                PSDho += sim.GF_res**2 * FocusFilter
+            sim.GFinPSD = True
+
+    # ------------------------------------------------------------------------
+    ## computation of the LO error (this changes for each asterism)
+    # ------------------------------------------------------------------------
+    sim.LO_res = np.sqrt(np.trace(sim.Ctot,axis1=1,axis2=2))
+
+    # ------------------------------------------------------------------------
+    # final PSF computation
+    # ------------------------------------------------------------------------
+    sim.finalPSF()
+
+    # ------------------------------------------------------------------------
+    # final results
+    # ------------------------------------------------------------------------
+    sim.computeOL_PSD()
+    sim.computeDL_PSD()
+    sim.cubeResults = []
+    cubeResultsArray = []
+    for i in range(sim.nWvl):
+        if sim.nWvl>1:
+            results = sim.results[i]
+        else:
+            results = sim.results
+        cubeResults = []
+        for img in results:
+            cubeResults.append(cpuArray(img.sampling))
+        if sim.nWvl>1:
+            sim.cubeResults.append(cubeResults)
+            cubeResultsArray.append(np.array(cubeResults))
+        else:
+            sim.cubeResults = cubeResults
+            cubeResultsArray = cubeResults
+        sim.cubeResultsArray = np.array(cubeResultsArray)
+    sim.computePSF1D()
 
 MAX_VALUE_CHARS = 80
 APPEND_TOKEN = '&&&'
@@ -259,6 +375,27 @@ def save_results_fits(output_path, name, results, simulation):
     hdr5['SIZE'] = str(simulation.psf1d_data.shape)
 
     hdul.writeto(f"{output_path}/{name}.fits", overwrite=True)
+
+def save_results(output_path, name, results):
+    output_file = f"{output_path}/{name}.pkl"
+    with open(output_file, 'wb') as f:
+        pickle.dump(results, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+def load_results(output_path_or_file_path, name=None):
+    if os.path.isfile(output_path_or_file_path):
+        output_file = output_path_or_file_path
+    else:
+        if name is None:
+            raise SimulateException("Name must be provided if output_path is a directory")
+        output_file = f"{output_path_or_file_path}/{name}.pkl"
+
+    if not os.path.isfile(output_file):
+        raise SimulateException(f"File {output_file} does not exist")
+
+    with open(output_file, 'rb') as f:
+        results = pickle.load(f)
+
+    return results
 
 def format_contour_label(x):
     s = f"{x:.2f}"

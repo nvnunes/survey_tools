@@ -26,20 +26,19 @@ def warmup(n):
     else:
         print(f"Process {n} started: GPU disabled")
 
-def run(options, i, r, theta, save_results=False):
+def run(options, i, r, theta):
     if options.num_sims > 1:
         sim_name = f"{options.name}_{i}"
     else:
         sim_name = options.name
 
-    if options.verbosity > 0:
-        sim_start_time = time.time()
+    sim_start_time = time.time()
 
-    if save_results:
+    if options.save_fits:
         sim_results, simulation = simulate.run_simulation(
             sim_name, options.ini_filename, options.wavelength, options.zenith_angle, options.seeing, r, theta,
             ee_size=options.ee_size, opt_type=options.opt_type, output_path=options.output_path,
-            do_plot=False, verbose=options.verbosity>2, return_simulation=save_results
+            do_plot=False, verbose=options.verbosity>2, return_simulation=True
         )
 
         simulate.save_results_fits(options.output_path, options.name, sim_results, simulation)
@@ -50,12 +49,15 @@ def run(options, i, r, theta, save_results=False):
             do_plot=False, verbose=options.verbosity>2, return_simulation=False
         )
 
-    if options.verbosity > 0:
+    if options.verbosity > 0 or options.num_sims == 1:
         elapsed_time = time.time() - sim_start_time
         num_digits = len(str(options.num_sims))
-        print(f"{str(i).rjust(num_digits)}/{options.num_sims}: Simulation Time: {elapsed_time:.1f} sec")
+        if options.num_sims == 1:
+            print(f"Simulation Time: {elapsed_time:.1f} sec")
+        else:
+            print(f"{str(i).rjust(num_digits)}/{options.num_sims}: Simulation Time: {elapsed_time:.1f} sec")
 
-        if save_results and options.verbosity > 1:
+        if options.save_fits:
             print(f"Output File    : {sim_name}.fits")
 
     return sim_results
@@ -76,6 +78,7 @@ def main():
         options.zenith_angle = 30.0 * u.deg
         options.seeing = 0.6 * u.arcsec
         options.ee_size = 100.0 * u.mas
+        options.save_fits = False
         options.num_threads = 1
         options.profile = False
         options.verbosity = True
@@ -87,6 +90,7 @@ def main():
         parser.add_argument('--zenith', type=float, default=None, help="Override the Zenith Angle in degrees from the INI file.")
         parser.add_argument('--seeing', type=float, default=None, help="Override the seeing in arcsec from the INI file.")
         parser.add_argument('--ee_size', type=float, default=100.0, help="Ensquared Energy size in mas (default: 100.0).")
+        parser.add_argument('--save_fits', action='store_true', help="Save results in FITS format.")
         parser.add_argument('--threads', type=int, default=1, help="Number of threads to use (default: 1).")
         parser.add_argument('--profile', action='store_true', help="Enable profiling.")
         parser.add_argument('--load_test', action='store_true', help="Load test data instead of running a new simulation.")
@@ -107,12 +111,11 @@ def main():
         if options.seeing is not None:
             options.seeing = options.seeing * u.arcsec
         options.ee_size = args.ee_size * u.mas
+        options.save_fits = args.save_fits
         options.num_threads = args.threads
         options.profile = args.profile
         options.load_test = args.load_test
         options.verbosity = args.verbose
-
-    options.save_fits = False
 
     if '-one' in options.test_case:
         options.grid_mode = 'origin'
