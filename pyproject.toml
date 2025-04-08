@@ -10,7 +10,7 @@ authors = [
 description = "Tools for planning surveys of high-redshift galaxies"
 readme = "README.md"
 urls = {repository = "https://github.com/nvnunes/survey_tools"}
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 license = {text = "MIT License"}
 dependencies = [
     "numpy >= 2.2.0",
