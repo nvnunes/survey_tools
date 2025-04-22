@@ -4,10 +4,23 @@
 # pylint: disable=too-few-public-methods,too-many-public-methods,too-many-instance-attributes,attribute-defined-outside-init
 # pylint: disable=invalid-name,too-many-arguments,too-many-locals,too-many-statements,too-many-branches
 
+from collections import namedtuple
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.spatial import Voronoi
 from shapely.geometry import Polygon
+
+#region Globals
+
+class TessellateException(Exception):
+    pass
+
+class StructType:
+    pass
+
+#endregion
+
+#region Veronoi Tesselation
 
 #########################################################################
 # Symmetric Equal-Area Voronoi Tessellation
@@ -34,9 +47,6 @@ from shapely.geometry import Polygon
 # distance between points and maximizes the area of the Voronoi cells.
 #
 #########################################################################
-
-class TessellateException(Exception):
-    pass
 
 def closest_num_hex_rings(N):
     """
@@ -97,7 +107,7 @@ def _random_points_in_circle(N, radius):
 
     return _sort_points(points, radius)
 
-def _hexagonal_grid_in_circle(N, radius):
+def _hexagonal_grid_in_circle(N, radius, omit_centre=False):
     """
     Generate points in a circle of given radius using a hexagonal grid for symmetry.
     """
@@ -116,10 +126,14 @@ def _hexagonal_grid_in_circle(N, radius):
                 points.append((x, y))
 
     points = np.array(points)
+    points = _sort_points(points, radius)[:N]  # Trim to exactly N points
 
-    return _sort_points(points, radius)[:N]  # Trim to exactly N points
+    if omit_centre:
+        points = points[1:]
 
-def _fibonacci_lattice_in_circle(N, radius):
+    return points
+
+def _fibonacci_lattice_in_circle(N, radius, omit_centre=False):
     """
     Generate points in a circule of given radius using a Fibonacci spiral with centre point always included.
     """
@@ -133,7 +147,10 @@ def _fibonacci_lattice_in_circle(N, radius):
     x = r_values * np.cos(theta_values)
     y = r_values * np.sin(theta_values)
 
-    points = np.vstack(([0, 0], np.column_stack((x, y))))
+    points = np.column_stack((x, y))
+
+    if not omit_centre:
+        points = np.vstack(([0, 0], points))
 
     return _sort_points(points, radius)
 
@@ -181,7 +198,7 @@ def _compute_centroids_areas(cells):
         areas.append(cell.area)
     return np.array(centroids), np.array(areas)
 
-def _lloyd_relaxation_in_circle(points, radius, method='fibonacci', max_iterations=20, alpha=0.5, verbose=False):
+def _lloyd_relaxation_in_circle(points, radius, method='fibonacci', omit_centre=False, max_iterations=20, alpha=0.5, verbose=False):
     """
     Perform Lloyd relaxation with area equalization inside a circle.
       - points: the interior points to be updated.
@@ -206,7 +223,7 @@ def _lloyd_relaxation_in_circle(points, radius, method='fibonacci', max_iteratio
         centroids, areas = _compute_centroids_areas(cells)
 
         # Ensure center point stays fixed at (0,0)
-        if is_symmetric:
+        if not omit_centre and is_symmetric:
             centroids[0] = [0, 0]
 
         # Adjust step size based on area discrepancy
@@ -223,7 +240,8 @@ def _lloyd_relaxation_in_circle(points, radius, method='fibonacci', max_iteratio
             new_points[:,1] = max_distances * np.sin(theta)
 
             # Keep center point unchanged
-            new_points[0] = [0, 0]
+            if not omit_centre:
+                new_points[0] = [0, 0]
         else:
             new_points *= max_distances[:, None] / r[:, None]
 
@@ -266,7 +284,7 @@ def plot_circle_tessellation(points, cells, radius, method=None):
         plt.title(f"Voronoi Tessellation in a Circle (N={len(points)})")
     plt.show()
 
-def tessellate_circle(N, radius=1.0, method='hexagon', max_iterations=1000, verbose=False):
+def tessellate_circle(N, radius=1.0, method='hexagon', omit_centre=False, max_iterations=1000, verbose=False):
     """
     Generate a Voronoi tessellation inside a circle with given radius and number of points
     """
@@ -286,10 +304,10 @@ def tessellate_circle(N, radius=1.0, method='hexagon', max_iterations=1000, verb
         case 'fib' | 'fibonacci':
             initial_points = _fibonacci_lattice_in_circle(N, radius)
         case _: # hexagonal
-            initial_points = _hexagonal_grid_in_circle(N, radius)
+            initial_points = _hexagonal_grid_in_circle(N, radius, omit_centre=omit_centre)
 
     # Produce Voronoi diagram and run Lloyd's relaxation to optimize
-    final_points, final_cells, relative_areas = _lloyd_relaxation_in_circle(initial_points, radius, method=method, max_iterations=max_iterations, verbose=verbose)
+    final_points, final_cells, relative_areas = _lloyd_relaxation_in_circle(initial_points, radius, omit_centre=omit_centre, method=method, max_iterations=max_iterations, verbose=verbose)
 
     # Output results
     if verbose:
@@ -302,7 +320,7 @@ def tessellate_circle(N, radius=1.0, method='hexagon', max_iterations=1000, verb
 
     return final_points, final_cells
 
-def tessellate_circle_with_hexagons(num_rings, radius=1.0,max_iterations=1000, verbose=False):
+def tessellate_circle_with_hexagons(num_rings, radius=1.0, omit_centre=False, max_iterations=1000, verbose=False):
     """
     Hexagons tessellate efficiently, approximate circles well, and offer optimal connectivity.
     This is why they are widely used in nature (beehives, molecular structures), technology
@@ -321,4 +339,310 @@ def tessellate_circle_with_hexagons(num_rings, radius=1.0,max_iterations=1000, v
         raise TessellateException('Minimum number of rings is 1')
 
     N = 3*num_rings*(num_rings+1)+1
-    return tessellate_circle(N, radius=radius, method='hex', max_iterations=max_iterations, verbose=verbose)
+    return tessellate_circle(N, radius=radius, method='hex', omit_centre=omit_centre, max_iterations=max_iterations, verbose=verbose)
+
+#endregion
+
+#region Symmetric Polar Grid
+
+def generate_points_from_first_quadrant(points=None, r=None, theta=None, return_polar=False):
+    if points is None and (r is None or theta is None):
+        raise ValueError("Either 'points' or both 'r' and 'theta' must be provided.")
+
+    if points is not None:
+        r = np.linalg.norm(points, axis=1)
+        theta = np.arctan2(points[:, 1], points[:, 0])
+
+    r_new = np.concatenate([r, r, r, r])
+    theta_new = np.concatenate([theta, theta+np.pi/2, theta+np.pi, theta+3*np.pi/2])
+
+    if return_polar:
+        return r_new, theta_new
+
+    x = r_new * np.cos(theta_new)
+    y = r_new * np.sin(theta_new)
+    return np.column_stack([x, y])
+
+def generate_symmetric_polar_grid(n_rings, n_first_ring, r_min, r_max, delta_n=1, return_polar=False):
+    """
+    Generate a 4-quadrant symmetric grid from a Q1 base using polar coordinates.
+
+    Parameters:
+    - n_rings: number of concentric rings
+    - n_first_ring: number of angular divisions in the first ring (Q1 only)
+    - r_min: radius of the innermost ring
+    - r_max: radius of the outermost ring
+    - delta_n: number of additional angular points to add per ring (optional)
+    - return_polar: if True, return (r_all, theta_all); else return Cartesian xy points
+
+    Returns:
+    - r_all, theta_all if return_polar is True
+    - np.column_stack([x, y]) if return_polar is False
+    """
+    if r_min >= r_max or n_first_ring <= 0 or n_rings <= 0:
+        raise ValueError("Invalid parameters: check radii and number of rings.")
+
+    # Linearly spaced radii
+    radii = np.linspace(r_min, r_max, n_rings)
+    
+    r_list = []
+    theta_list = []
+
+    for i, r_val in enumerate(radii):
+        n_points = n_first_ring + i * delta_n
+        angles = np.linspace(0, np.pi / 2, n_points, endpoint=False)
+        r_list.extend([r_val] * n_points)
+        theta_list.extend(angles)
+
+    r = np.array(r_list)
+    theta = np.array(theta_list)
+
+    # 4-quadrant symmetry
+    r_all = np.tile(r, 4)
+    theta_all = np.concatenate([
+        theta,
+        theta + np.pi / 2,
+        theta + np.pi,
+        theta + 3 * np.pi / 2
+    ])
+
+    if return_polar:
+        return r_all, theta_all
+
+    x = r_all * np.cos(theta_all)
+    y = r_all * np.sin(theta_all)
+
+    return np.column_stack([x, y])
+
+#endregion
+
+#region Asterisms
+
+Asterism = namedtuple("Triangle", ["r", "theta", "x", "y", "area", "scale", "score"], defaults=(None, None, None, None, None, None, None))
+
+def create_asterism(r, theta):
+    coords = polar_to_cartesian(r, theta)
+    center_coords = get_triangle_incenter(coords)
+    area = get_triangle_area(coords)
+    mean_dist = get_triangle_mean_distance(coords, center_coords=center_coords)
+    score = get_normalized_compactness_score(coords, mean_dist=mean_dist, area=area)
+    return Asterism(r=r, theta=theta, x=coords[0], y=coords[1], area=area, scale=2*mean_dist, score=score)
+
+def polar_to_cartesian(r, theta):
+    x = r * np.cos(theta)
+    y = r * np.sin(theta)
+    return np.column_stack((x, y))
+
+def get_triangle_area(coords):
+    """
+    Compute the area of a triangle defined by 3 points.
+    """
+    x, y = coords[:, 0], coords[:, 1]
+    area = 0.5 * np.abs(
+        x[0]*(y[1] - y[2]) +
+        x[1]*(y[2] - y[0]) +
+        x[2]*(y[0] - y[1])
+    )
+    return area
+
+def get_triangle_incenter(coords):
+    """
+    Compute the incenter (ux, uy) of a triangle given 3 Cartesian points.
+    Input: coords is (3, 2) array [[x1,y1], [x2,y2], [x3,y3]]
+    """
+    ax, ay = coords[0]
+    bx, by = coords[1]
+    cx, cy = coords[2]
+
+    d1 = np.sqrt((bx - cx)**2 + (by - cy)**2)  # side opposite A
+    d2 = np.sqrt((cx - ax)**2 + (cy - ay)**2)  # side opposite B
+    d3 = np.sqrt((ax - bx)**2 + (ay - by)**2)  # side opposite C
+    p = d1 + d2 + d3
+
+    ux = (d1 * ax + d2 * bx + d3 * cx) / p
+    uy = (d1 * ay + d2 * by + d3 * cy) / p
+    return ux, uy
+
+def is_incenter_within_radius(r, theta, max_radius):
+    coords = polar_to_cartesian(r, theta)
+    ux, uy = get_triangle_incenter(coords)
+    return np.hypot(ux, uy) <= max_radius
+
+def get_triangle_mean_distance(coords, center_coords=None):
+    """
+    Computes an angle-invariant scale for a triangle:
+    the maximum distance from a center point (default: incenter) to its vertices.
+    """
+    if center_coords is None:
+        cx, cy = get_triangle_incenter(coords)
+    else:
+        cx, cy = center_coords
+
+    dists = np.linalg.norm(coords - np.array([cx, cy]), axis=1)
+    return np.mean(dists)
+
+def get_normalized_compactness_score(coords, center_coords=None, mean_dist=None, area=None):
+    """
+    Compute a normalized compactness score for a triangle:
+    - Area efficiency relative to mean distance from center
+    - Normalized so equilateral triangle → score = 1
+    """
+    if mean_dist is None:
+        if center_coords is None:
+            center_coords = get_triangle_incenter(coords)
+        mean_dist = get_triangle_mean_distance(coords, center_coords)
+
+    if area is None:
+        area = get_triangle_area(coords)
+
+    raw_score = area / (mean_dist ** 2)
+    equil_ref = 3 * np.sqrt(3) / 4  # equilateral score baseline
+
+    return raw_score / equil_ref
+
+def is_degenerate_triangle(r, theta, tol=1e-3):
+    """
+    Returns True if the triangle is degenerate (area ≈ 0).
+    Inputs are arrays of r and theta (length 3).
+    """
+    coords = polar_to_cartesian(r, theta)
+    x, y = coords[:, 0], coords[:, 1]
+    
+    # Shoelace formula for area
+    area = 0.5 * abs(
+        x[0]*(y[1] - y[2]) +
+        x[1]*(y[2] - y[0]) +
+        x[2]*(y[0] - y[1])
+    )
+    return area < tol
+
+def canonicalize_asterism(indices, r, theta):
+    pts = polar_to_cartesian(r[indices], theta[indices])
+    
+    def apply_transform(mat, pts):
+        return np.dot(pts, mat.T)
+
+    angles = np.linspace(0, 2*np.pi, 4, endpoint=False)
+    rotation_matrices = [np.array([[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]]) for a in angles]
+    reflection_matrices = [
+        np.array([[1, 0], [0, -1]]),
+        np.array([[-1, 0], [0, 1]]),
+        np.array([[0, 1], [1, 0]]),
+        np.array([[0, -1], [-1, 0]])
+    ]
+
+    all_variants = []
+    for R in rotation_matrices:
+        rotated = apply_transform(R, pts)
+        all_variants.append(np.sort(rotated, axis=0))
+        for M in reflection_matrices:
+            reflected = apply_transform(M @ R, pts)
+            all_variants.append(np.sort(reflected, axis=0))
+
+    signatures = [tuple(np.round(v.flatten(), 6)) for v in all_variants]
+    return min(signatures)
+
+def rotate_first_point_to_q1(asterism, r, theta):
+    angles = np.linspace(0, 2 * np.pi, 4, endpoint=False)
+    rotation_matrices = [
+        np.array([[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]])
+        for a in angles
+    ]
+
+    coords = polar_to_cartesian(r[asterism], theta[asterism])
+    best_rotated = None
+    best_first_index = None
+
+    for R in rotation_matrices:
+        rotated_coords = np.dot(coords, R.T)
+        q1_flags = (rotated_coords[:, 0] > 0) & (rotated_coords[:, 1] > 0)
+        q1_positions = np.where(q1_flags)[0]
+
+        if len(q1_positions) == 0:
+            continue
+
+        min_index = np.argmin(asterism[q1_positions])
+        min_q1_position = q1_positions[min_index]
+        rolled = np.roll(asterism, -min_q1_position)
+        first_index = rolled[0]
+
+        if (best_first_index is None) or (first_index < best_first_index):
+            best_first_index = first_index
+            best_rotated = rolled
+
+    return best_rotated if best_rotated is not None else asterism
+
+def find_asterism(asterisms, r, theta):
+    for i, ast in enumerate(asterisms):
+        if np.all(np.isclose(np.sort(ast.r), np.sort(r))) and np.all(np.isclose(np.sort(ast.theta), np.sort(theta))):
+            return i
+    return None
+
+def make_asterism_changes(asterisms):
+    additions = [
+        (np.array([10, 10, 10]), np.deg2rad(np.array([0, 120, 240]))),
+        (np.array([20, 20, 20]), np.deg2rad(np.array([0, 120, 240]))),
+        (np.array([40, 40, 40]), np.deg2rad(np.array([0, 120, 240]))),
+        (np.array([50, 50, 50]), np.deg2rad(np.array([0, 120, 240]))),
+    ]
+
+    for addition in additions:
+        asterisms.append(create_asterism(addition[0], addition[1]))
+
+    deletions = [
+       (np.array([60, 60, 60]), np.deg2rad(np.array([15, 135, 255]))),
+    ]
+
+    for deletion in deletions:
+        idx = find_asterism(asterisms, deletion[0], deletion[1])
+        if idx is not None:
+            asterisms.pop(idx)
+
+    return asterisms
+
+def generate_asterisms(r, theta, max_incentre_distance=2.0, return_stats=False):
+    N = len(r)
+
+    # --- Main Asterism Loop ---
+    triplets = np.array(np.meshgrid(*[np.arange(N)]*3)).T.reshape(-1, 3)
+    num_triplets = len(triplets)
+
+    # --- Filter duplicate indices ---
+    triplets = triplets[np.all(np.diff(np.sort(triplets, axis=1), axis=1) > 0, axis=1)]
+    num_non_repeat_triplets = len(triplets)
+
+    seen_signatures = {}
+    num_degenerate = 0
+    num_not_centered = 0
+
+    for triplet in triplets:
+        if is_degenerate_triangle(r[triplet], theta[triplet]):
+            num_degenerate += 1
+            continue
+
+        if not is_incenter_within_radius(r[triplet], theta[triplet], max_incentre_distance):
+            num_not_centered += 1
+            continue
+
+        sig = canonicalize_asterism(triplet, r, theta)
+        if sig not in seen_signatures:
+            seen_signatures[sig] = triplet
+
+    unique_triplets = np.array([rotate_first_point_to_q1(ast, r, theta) for ast in seen_signatures.values()])
+    asterisms = [create_asterism(r[triplet], theta[triplet]) for triplet in unique_triplets]
+    asterisms = make_asterism_changes(asterisms)
+    asterisms.sort(key=lambda t: (-(t.score), abs(t.scale - 60)))
+
+    if return_stats:
+        stats = StructType()
+        stats.max_incentre_distance = max_incentre_distance
+        stats.num_triplets = num_triplets
+        stats.num_non_repeat_triplets = num_non_repeat_triplets
+        stats.num_degenerate = num_degenerate
+        stats.num_not_centered = num_not_centered
+        stats.num_asterisms = len(asterisms)
+        return asterisms, stats
+    else:
+        return asterisms
+
+#endregion
