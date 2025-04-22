@@ -16,3 +16,4 @@ dustmaps
 mocpy
 shapely
 astro-tiptop>=1.3.22
+mat73

@@ -5,33 +5,107 @@
 # pylint: disable=invalid-name,too-many-arguments,too-many-locals,too-many-statements,too-many-branches
 
 from configparser import ConfigParser
-from datetime import datetime
 import os
 import pickle
-from astropy.io import fits
 import astropy.units as u
 from matplotlib import rc
 import matplotlib.pyplot as plt
+from mat73 import loadmat
 import numpy as np
 from scipy.interpolate import griddata, Rbf
-from mastsel.mavisLO import MavisLO
-from mastsel.mavisPsf import Field, zeroPad
-from mastsel.mavisUtilities import congrid
-from p3.aoSystem.fourierModel import fourierModel
 from tiptop import __version__ as __tiptop_version__
-from tiptop.tiptop import cpuArray, baseSimulation
-from tiptop.tiptopUtils import arrayP3toMastsel
+from tiptop.tiptop import baseSimulation
 import stats
+import tessellate
 
 rc("text", usetex=False)
-
-class StructType:
-    pass
 
 class SimulateException(Exception):
     pass
 
-def _create_config(base_config_filename, config_path, wavelength, zenith_angle, seeing, opt_type, r=0.0, theta=0.0, config_name=None):
+# ------------------------------------------------------------------------
+# MOAO:
+# ------------------------------------------------------------------------
+# 1. LTAO HO: run HO calcs optimizing on fixed set of points (grid within 85") to get NGS LTAO PSDs
+# 2. MOAO HO: run HO calcs optimizing on individual science positions to get MOAO PSDs
+# 3. LTAO LO: compute NGS PSFs and stats using NGS LTAO PSDs
+# 4. MOAO LO: compute Ctot using NGS LTAO PSFs and science positions
+# 5. MOAO LO: compute final PSFs using MOAO PSDs and Ctot
+#
+# ------------------------------------------------------------------------
+# TIPTOP Algorithm:
+# ------------------------------------------------------------------------
+#
+# self.cartSciencePointingCoords: (x,y) coords of science points <-- ini > sources_science > Zenith/Azimuth
+# self.cartNGSCoords_field:       (x,y) coords of NGS <-- ini > sources_LO > Zenith/Azimuth
+# self.LO_fluxes_field:           ini > sensor_LO > NumberPhotons
+# self.LO_freqs_field:            ini > RTC > SensorFrameRate_LO
+# self.NGS_fluxes_field:          self.LO_fluxes_field * self.LO_freqs_field
+#
+# [HO: COMMON]
+# sim.fao.initComputations() with Stage 2 config
+#   Tomographic reconstruction to get self.PSD for each science point optimizing on each science point (MOAO)
+#
+# [HO: COMMON]
+# sim.fao.initComputations() with Stage 1 config
+#   Tomographic reconstruction to get self.PSD for each NGS location optimizing on fixed set of points (LTAO)
+#
+# [LO: NGS SPECIFIC]
+# self.ngsPSF()
+#   psdNGS <-- self.PSD at NGS positions
+#   nSA: ini > sensor_LO > NumberLenslets
+#   pf = FourierUtils.pistonFilter(2*self.tel_radius/nSAi,k)
+#   psdNGS[i] = psdNGS[i] * pf
+#
+#   psfLE_NGS = psdSetToPsfSet(psdNGS, maskLO,
+#                              self.LO_wvl, nLO, self.sx, self.grid_diameter,
+#                              self.freq_range, self.dk, nPixPSFLO,
+#                              self.wvlMax, overSampLO,
+#                              opdMap=self.opdMap)
+#
+#   self.NGS_SR_field:         psfLE_NGS Strehl Ratio
+#   self.NGS_EE_field:         psfLE_NGS encircled energy
+#   self.NGS_FWHM_mas_field:   psfLE_NGS FWHM
+#   self.NGS_DL_FWHM_mas:      NGS Diffraction Limited FWHM (not currently used)
+#
+# [LO: NGS SPECIFIC]
+# sim.Ctot = self.mLO.computeTotalResidualMatrix(
+#                   self.cartSciencePointingCoords,
+#                   self.cartNGSCoords_field, self.NGS_fluxes_field, self.LO_freqs_field,
+#                   self.NGS_SR_field, self.NGS_EE_field, self.NGS_FWHM_mas_field,
+#                   aNGS_FWHM_DL_mas = self.NGS_DL_FWHM_mas, doAll=True)
+#
+#   Ctot (residual correlation matrix?):
+#       + Turbulence (stats computed using psfLE_NGS from self.ngsPSF)
+#       + Noise (sensor)
+#       + Aliasing (NGS DL FWHM) (not currently used)
+#       + Wind Shake (not currently used)
+#       + NGS Coords
+#       + Science Coords
+#
+# finalPSF()
+#   [HO: COMMON]
+#   PSD_HO <-- self.PSD at science points
+#   mask = self.fao.ao.tel.pupil
+#   self.opdMap = None (not currently used)
+#   psfLongExp = psdSetToPsfSet(PSD_HO, mask,
+#                               self.wvl, self.N, self.sx, self.grid_diameter,
+#                               self.freq_range, self.dk, self.nPixPSF,
+#                               self.wvlMax, self.overSamp,
+#                               opdMap=self.opdMap, padPSD=self.nWvl>1)
+#
+#   [LO: NGS SPECIFIC]
+#   finalConvolution()
+#       ellp = self.mLO.ellipsesFromCovMats(self.Ctot)
+#       resSpec = residualToSpectrum(ellp, self.wvlRef, self.nPixPSF, 1/(self.nPixPSF * self.psInMas))
+#       sim.results[i] = convolve(psfLongExp, with resSpec)
+#
+# sim.results[i].sampling is the final PSF at each science point
+# ------------------------------------------------------------------------
+
+def _create_config(base_config_filename, config_path, wavelength, zenith_angle, seeing,
+                   r=0.0, theta=0.0, optimization_r=None, optimization_theta=None, remove_moao=False, config_name=None):
+
     if not isinstance(r, (list, np.ndarray)):
         r = [r]
 
@@ -48,12 +122,17 @@ def _create_config(base_config_filename, config_path, wavelength, zenith_angle, 
     config['telescope']['ZenithAngle'] = str(zenith_angle.to(u.deg).value)
     config['atmosphere']['Seeing'] = str(seeing.to(u.arcsec).value)
     config['sources_science']['Wavelength'] = f"[{wavelength.to(u.m).value:.3e}]"
-    config['sources_science']['Zenith'] = '[' + ','.join(f"{n:.5f}" for n in r) + ']'
-    config['sources_science']['Azimuth'] = '[' + ','.join(f"{n:.5f}" for n in theta) + ']'
-    config['DM']['OptimizationType'] = f"'{opt_type}'"
-    config['DM']['OptimizationZenith'] = '[' + ','.join(f"{n:.5f}" for n in r) + ']'
-    config['DM']['OptimizationAzimuth'] = '[' + ','.join(f"{n:.5f}" for n in theta) + ']'
-    config['DM']['OptimizationWeight'] = '[' + ','.join(f"{n:.1f}" for n in np.ones(len(r))) + ']'
+    config['sources_science']['Zenith'] = '[' + ','.join(f"{n:.4f}" for n in r) + ']'
+    config['sources_science']['Azimuth'] = '[' + ','.join(f"{n:.4f}" for n in theta) + ']'
+    if optimization_r is not None and optimization_theta is not None:
+        config['DM']['OptimizationZenith'] = '[' + ','.join(f"{n:.4f}" for n in optimization_r) + ']'
+        config['DM']['OptimizationAzimuth'] = '[' + ','.join(f"{n:.4f}" for n in optimization_theta) + ']'
+        config['DM']['OptimizationWeight'] = '[' + ','.join(f"{n:.1f}" for n in np.ones(len(optimization_r))) + ']'
+
+    if remove_moao:
+        for section in list(config.sections()):
+            if section.endswith('_MOAO'):
+                config.remove_section(section)
 
     config_filename = f"{config_path}/{config_name}.ini"
     with open(config_filename, 'w', encoding='utf-8') as configfile:
@@ -61,8 +140,14 @@ def _create_config(base_config_filename, config_path, wavelength, zenith_angle, 
 
     return config_filename, config
 
-def run_simulation(name, base_config_filename, wavelength, zenith_angle, seeing, r, theta, ee_size=100*u.mas, opt_type='normal', output_path='../output', do_plot=False, verbose=False, return_simulation=False):
-    config_filename, config = _create_config(base_config_filename, output_path, wavelength, zenith_angle, seeing, opt_type, r=r, theta=theta, config_name=name)
+def run_simulation(name, base_config_filename, wavelength, zenith_angle, seeing, r, theta,
+                   optimization_r=None, optimization_theta=None, ee_size=100*u.mas, output_path='../output', do_plot=False, verbose=False):
+
+    do_moao = 'moao' in name.lower()
+
+    config_filename, config = _create_config(base_config_filename, output_path, wavelength, zenith_angle, seeing,
+                                             r=r, theta=theta, optimization_r=optimization_r, optimization_theta=optimization_theta,
+                                             remove_moao=not do_moao, config_name=name)
 
     path2param          = os.path.dirname(config_filename)
     parametersFile      = os.path.splitext(os.path.basename(config_filename))[0]
@@ -73,17 +158,18 @@ def run_simulation(name, base_config_filename, wavelength, zenith_angle, seeing,
     ensquaredEnergy     = True  # If you want ensquared energy instead of encircled energy set this to True.
     eeRadiusInMas       = ee_size.to(u.mas).value/2 # Radius used for the computation of ensquared energy (half the side of the square)
 
-    results = StructType()
-    results.wavelength = wavelength
-    results.seeing = seeing
-    results.zenith_angle = zenith_angle
-    results.NGS_zd = np.fromstring(config['sources_LO']['Zenith' ].strip('[]'), dtype=np.float64, sep=',')
-    results.NGS_az = np.fromstring(config['sources_LO']['Azimuth'].strip('[]'), dtype=np.float64, sep=',')
-    results.LGS_zd = np.fromstring(config['sources_HO']['Zenith' ].strip('[]'), dtype=np.float64, sep=',')
-    results.LGS_az = np.fromstring(config['sources_HO']['Azimuth'].strip('[]'), dtype=np.float64, sep=',')
-    results.ee_size = ee_size
-    results.r = r
-    results.theta = theta
+    results = {
+        'wavelength': wavelength,
+        'seeing': seeing,
+        'zenith_angle': zenith_angle,
+        'NGS_zd': np.fromstring(config['sources_LO']['Zenith'].strip('[]'), dtype=np.float64, sep=','),
+        'NGS_az': np.fromstring(config['sources_LO']['Azimuth'].strip('[]'), dtype=np.float64, sep=','),
+        'LGS_zd': np.fromstring(config['sources_HO']['Zenith'].strip('[]'), dtype=np.float64, sep=','),
+        'LGS_az': np.fromstring(config['sources_HO']['Azimuth'].strip('[]'), dtype=np.float64, sep=','),
+        'ee_size': ee_size,
+        'r': r,
+        'theta': theta
+    }
 
     simulation = baseSimulation(
         path2param, parametersFile, outputDir, outputFile,
@@ -92,294 +178,27 @@ def run_simulation(name, base_config_filename, wavelength, zenith_angle, seeing,
         doPlot=do_plot, verbose=verbose
     )
 
-    _run_tiptop(simulation)
+    simulation.doOverallSimulation(skipMerit=True, skipPSF1D=True)
 
-    results.psfs = np.array([cpuArray(img.sampling) for img in simulation.results])
+    psfs, sr, fwhm, ee = stats.get_stats(simulation)
 
-    results.sr, results.fwhm, results.ee = stats.get_stats(
-        results.psfs,
-        simulation.wvl[0],
-        simulation.tel_radius,
-        simulation.psInMas,
-        simulation.fao.ao.tel.pupil,
-        simulation.eeRadiusInMas
-    )
+    results.update({
+        'pixel_scale': simulation.psInMas,
+        'psfs': psfs,
+        'sr': sr,
+        'fwhm': fwhm,
+        'ee': ee
+    })
 
-    if return_simulation:
-        return results, simulation
-    else:
-        return results
+    return results, simulation
 
-def _run_tiptop(sim: baseSimulation):
-
-    if sim.LOisOn:
-        sim.configLO()
-
-    sim.results = []
-
-    # ------------------------------------------------------------------------
-    ## HO Part with P3 PSDs
-    # ------------------------------------------------------------------------
-
-    sim.fao = fourierModel( sim.fullPathFilename, calcPSF=False, verbose=sim.verbose
-                        , display=False, getPSDatNGSpositions=sim.LOisOn
-                        , computeFocalAnisoCov=False, TiltFilter=sim.LOisOn
-                        , getErrorBreakDown=sim.getHoErrorBreakDown, doComputations=False
-                        , psdExpansion=True)
-
-    if 'sensor_LO' in sim.my_data_map.keys():
-        sim.fao.my_data_map['sensor_LO']['NumberPhotons'] = sim.my_data_map['sensor_LO']['NumberPhotons']
-        sim.fao.ao.my_data_map['sensor_LO']['NumberPhotons'] = sim.my_data_map['sensor_LO']['NumberPhotons']
-    if 'sources_LO' in sim.my_data_map.keys():
-        sim.fao.my_data_map['sources_LO'] = sim.my_data_map['sources_LO']
-        sim.fao.ao.my_data_map['sources_LO'] = sim.my_data_map['sources_LO']
-        sim.fao.ao.configLOsensor()
-        sim.fao.ao.configLO()
-        sim.fao.ao.configLO_SC()
-
-    sim.fao.initComputations()
-
-    # High-order PSD caculations at the science directions and NGSs directions
-    sim.PSD           = sim.fao.PSD # in nm^2
-    sim.PSD           = sim.PSD.transpose()
-    sim.N             = sim.PSD[0].shape[0]
-    sim.nPointings    = sim.pointings.shape[1]
-    sim.nPixPSF       = sim.my_data_map['sensor_science']['FieldOfView']
-    sim.overSamp      = int(sim.fao.freq.kRef_)
-    sim.freq_range    = sim.N*sim.fao.freq.PSDstep
-    sim.pitch         = 1/sim.freq_range
-    sim.grid_diameter = sim.pitch*sim.N
-    sim.sx            = int(2*np.round(sim.tel_radius/sim.pitch))
-    # dk is the same as in p3.aoSystem.powerSpectrumDensity except that it is multiplied by 1e9 instead of 2.
-    sim.dk            = 1e9*sim.fao.freq.kcMax_/sim.fao.freq.resAO
-    # wvlRef from P3 is required to scale correctly the OL PSD from rad to m
-    sim.wvlRef        = sim.fao.freq.wvlRef
-    # Define the pupil shape
-    sim.mask = Field(sim.wvlRef, sim.N, sim.grid_diameter)
-    sim.mask.sampling = congrid(arrayP3toMastsel(sim.fao.ao.tel.pupil), [sim.sx, sim.sx])
-    sim.mask.sampling = zeroPad(sim.mask.sampling, (sim.N-sim.sx)//2)
-    # error messages for wrong pixel size
-    if sim.psInMas != cpuArray(sim.fao.freq.psInMas[0]):
-        raise ValueError(f"sensor_science.PixelScale, '{sim.psInMas}', is different from self.fao.freq.psInMas,'{cpuArray(sim.fao.freq.psInMas)}'")
-
-    if sim.fao.ao.tel.opdMap_on is not None:
-        sim.opdMap = arrayP3toMastsel(sim.fao.ao.tel.opdMap_on)
-    else:
-        sim.opdMap = None
-
-    # ----------------------------------------------------------------------------
-    ## optional LO part
-    # ----------------------------------------------------------------------------
-
-    if sim.LOisOn:
-        # ------------------------------------------------------------------------
-        # --- NGS PSDs, PSFs and merit functions on PSFs
-        # ------------------------------------------------------------------------
-        sim.ngsPSF()
-
-        # ------------------------------------------------------------------------
-        # --- initialize MASTSEL MavisLO object
-        # ------------------------------------------------------------------------
-        sim.mLO = MavisLO(sim.path, sim.parametersFile, verbose=sim.verbose)
-
-        # ------------------------------------------------------------------------
-        ## total covariance matrix Ctot
-        # ------------------------------------------------------------------------
-        sim.Ctot          = sim.mLO.computeTotalResidualMatrix(np.array(sim.cartSciencePointingCoords),
-                                                                    sim.cartNGSCoords_field, sim.NGS_fluxes_field,
-                                                                    sim.LO_freqs_field,
-                                                                    sim.NGS_SR_field, sim.NGS_EE_field, sim.NGS_FWHM_mas_field,
-                                                                    aNGS_FWHM_DL_mas = sim.NGS_DL_FWHM_mas, doAll=True)
-
-        # ------------------------------------------------------------------------
-        # --- optional total focus covariance matrix Ctot
-        # ------------------------------------------------------------------------
-        if sim.addFocusError:
-            # compute focus error
-            sim.CtotFocus = sim.mLO.computeFocusTotalResidualMatrix(sim.cartNGSCoords_field, sim.Focus_fluxes_field,
-                                                                    sim.Focus_freqs_field, sim.Focus_SR_field,
-                                                                    sim.Focus_EE_field, sim.Focus_FWHM_mas_field)
-
-            sim.GF_res = np.sqrt(max(sim.CtotFocus[0], 0))
-            # add focus error to PSD using P3 FocusFilter
-            FocusFilter = sim.fao.FocusFilter()
-            FocusFilter *= 1/FocusFilter.sum()
-            for PSDho in sim.PSD:
-                PSDho += sim.GF_res**2 * FocusFilter
-            sim.GFinPSD = True
-
-    # ------------------------------------------------------------------------
-    ## computation of the LO error (this changes for each asterism)
-    # ------------------------------------------------------------------------
-    sim.LO_res = np.sqrt(np.trace(sim.Ctot,axis1=1,axis2=2))
-
-    # ------------------------------------------------------------------------
-    # final PSF computation
-    # ------------------------------------------------------------------------
-    sim.finalPSF()
-
-    # ------------------------------------------------------------------------
-    # final results
-    # ------------------------------------------------------------------------
-    sim.computeOL_PSD()
-    sim.computeDL_PSD()
-    sim.cubeResults = []
-    cubeResultsArray = []
-    for i in range(sim.nWvl):
-        if sim.nWvl>1:
-            results = sim.results[i]
-        else:
-            results = sim.results
-        cubeResults = []
-        for img in results:
-            cubeResults.append(cpuArray(img.sampling))
-        if sim.nWvl>1:
-            sim.cubeResults.append(cubeResults)
-            cubeResultsArray.append(np.array(cubeResults))
-        else:
-            sim.cubeResults = cubeResults
-            cubeResultsArray = cubeResults
-        sim.cubeResultsArray = np.array(cubeResultsArray)
-    sim.computePSF1D()
-
-MAX_VALUE_CHARS = 80
-APPEND_TOKEN = '&&&'
-
-def add_hdr_keyword(hdr, key_primary, key_secondary, val, iii=None, jjj=None):
-    '''
-    This functions add an element of the parmaters dictionary into the fits file header
-    '''
-    val_string = str(val)
-    key = 'HIERARCH '+ key_primary +' '+ key_secondary
-    if iii != None:
-        key += ' '+str(iii)
-    if jjj != None:
-        key += ' '+str(jjj)
-    margin = 4
-    key = key
-    current_val_string = val_string
-    if len(key) + margin > MAX_VALUE_CHARS:
-        print("Error, keywork is not acceptable due to string length.")
-        return
-    while not len(key) + 1 + len(current_val_string) + margin < MAX_VALUE_CHARS:
-        max_char_index = MAX_VALUE_CHARS-len(key)-1-len(APPEND_TOKEN)-margin
-        hdr[key+'+'] = current_val_string[:max_char_index]+APPEND_TOKEN        
-        current_val_string = current_val_string[max_char_index:]        
-    hdr[key] = current_val_string
-
-def save_results_fits(output_path, name, results, simulation):
-    hdul = fits.HDUList()
-    hdul.append(fits.PrimaryHDU())
-    hdul.append(fits.ImageHDU(data=cpuArray(simulation.cubeResultsArray)))
-    hdul.append(fits.ImageHDU(data=cpuArray(simulation.psfOL.sampling))) # append open-loop PSF
-    hdul.append(fits.ImageHDU(data=cpuArray(simulation.psfDL.sampling))) # append diffraction limited PSF
-    hdul.append(fits.ImageHDU(data=cpuArray(simulation.PSD))) # append high order PSD
-    hdul.append(fits.ImageHDU(data=cpuArray(simulation.psf1d_data))) # append radial profiles forthe final PSFs
-
-    now = datetime.now()
-
-    # header
-    hdr0 = hdul[0].header
-    hdr0['TIME'] = now.strftime("%Y%m%d_%H%M%S")
-    hdr0['TIPTOP_V'] = __tiptop_version__
-
-    # parameters in the header
-    for key_primary in simulation.my_data_map:
-        for key_secondary in simulation.my_data_map[key_primary]:
-            temp = simulation.my_data_map[key_primary][key_secondary]
-            if isinstance(temp, list):
-                iii = 0
-                for elem in temp:
-                    if isinstance(elem, list):
-                        jjj = 0
-                        for elem2 in elem:
-                            add_hdr_keyword(hdr0,key_primary,key_secondary,elem2,iii=str(iii),jjj=str(jjj))
-                            jjj += 1
-                    else:
-                        add_hdr_keyword(hdr0,key_primary,key_secondary,elem,iii=str(iii))
-                    iii += 1
-            else:
-                add_hdr_keyword(hdr0, key_primary,key_secondary,temp)
-
-    # header of the PSFs
-    hdr1 = hdul[1].header
-    hdr1['TIME'] = now.strftime("%Y%m%d_%H%M%S")
-    hdr1['CONTENT'] = "PSF CUBE"
-    hdr1['SIZE'] = str(simulation.cubeResultsArray.shape)
-    if simulation.nWvl>1:
-        for i in range(simulation.nWvl):
-            hdr1['WL_NM'+str(i).zfill(3)] = str(int(simulation.wvl[i]*1e9))
-    else:
-        hdr1['WL_NM'] = str(int(simulation.wvl[0]*1e9))
-    hdr1['PIX_MAS'] = str(simulation.psInMas)
-    hdr1['CC'] = "CARTESIAN COORD. IN ASEC OF THE "+str(simulation.pointings.shape[1])+" SOURCES"
-    for i in range(simulation.pointings.shape[1]):
-        hdr1['CCX' + str(i).zfill(4)] = np.round(simulation.pointings[0, i], 3).item()
-        hdr1['CCY' + str(i).zfill(4)] = np.round(simulation.pointings[1, i], 3).item()
-    if hasattr(simulation,'HO_res'):
-        hdr1['RESH'] = "High Order residual in nm RMS"
-        for i in range(simulation.HO_res.shape[0]):
-            hdr1['RESH'+str(i).zfill(4)] =  np.round(cpuArray(simulation.HO_res[i]),3)
-    if hasattr(simulation,'LO_res'):
-        hdr1['RESL'] = "Low Order residual in nm RMS"
-        for i in range(simulation.LO_res.shape[0]):
-            hdr1['RESL'+str(i).zfill(4)] = np.round(cpuArray(simulation.LO_res[i]),3)
-    if hasattr(simulation,'GF_res'):
-        hdr1['RESF'] = "Global Focus residual in nm RMS (included in PSD)"
-        hdr1['RESF0000'] = np.round(cpuArray(simulation.GF_res),3)
-    for i in range(simulation.nWvl):
-        if simulation.nWvl>1:
-            cubeResultsArray = simulation.cubeResultsArray[i]
-            wTxt = 'W'+str(i).zfill(2)
-            fTxt = 'FW'
-            eTxt = 'EE'
-            Nfill = 2
-        else:
-            cubeResultsArray = simulation.cubeResultsArray
-            wTxt = ''
-            fTxt = 'FWHM'
-            if simulation.eeRadiusInMas >= 100:
-                eTxt = 'EE'+f"{simulation.eeRadiusInMas/1000:.1f}".replace('.','')
-            else:
-                eTxt = 'EE'+str(int(np.round(simulation.eeRadiusInMas)))
-            Nfill = 4
-        for j in range(cubeResultsArray.shape[0]):
-            hdr1['SR'+str(j).zfill(Nfill)+wTxt] = float(np.round(results.sr[j],5))
-        for j in range(cubeResultsArray.shape[0]):
-            hdr1[fTxt+str(j).zfill(Nfill)+wTxt] = np.round(results.fwhm[j],3)
-        for j in range(cubeResultsArray.shape[0]):
-            hdr1[eTxt+str(j).zfill(Nfill)+wTxt] = np.round(results.ee[j],5)
-
-    # header of the OPEN-LOOP PSF
-    hdr2 = hdul[2].header
-    hdr2['TIME'] = now.strftime("%Y%m%d_%H%M%S")
-    hdr2['CONTENT'] = "OPEN-LOOP PSF"
-    hdr2['SIZE'] = str(simulation.psfOL.sampling.shape)
-
-    # header of the DIFFRACTION LIMITED PSF
-    hdr3 = hdul[3].header
-    hdr3['TIME'] = now.strftime("%Y%m%d_%H%M%S")
-    hdr3['CONTENT'] = "DIFFRACTION LIMITED PSF"
-    hdr3['SIZE'] = str(simulation.psfDL.sampling.shape)
-
-    # header of the PSD
-    hdr4 = hdul[4].header
-    hdr4['TIME'] = now.strftime("%Y%m%d_%H%M%S")
-    hdr4['CONTENT'] = "High Order PSD"
-    hdr4['SIZE'] = str(simulation.PSD.shape)
-
-    # header of the Total PSFs profiles
-    hdr5 = hdul[5].header
-    hdr5['TIME'] = now.strftime("%Y%m%d_%H%M%S")
-    hdr5['CONTENT'] = "Final PSFs profiles"
-    hdr5['SIZE'] = str(simulation.psf1d_data.shape)
-
-    hdul.writeto(f"{output_path}/{name}.fits", overwrite=True)
-
-def save_results(output_path, name, results):
+def save_results(output_path, name, results, verbose=False):
     output_file = f"{output_path}/{name}.pkl"
     with open(output_file, 'wb') as f:
         pickle.dump(results, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+    if verbose:
+        print(f"Output File    : {name}.pkl")
 
 def load_results(output_path_or_file_path, name=None):
     if os.path.isfile(output_path_or_file_path):
@@ -397,43 +216,147 @@ def load_results(output_path_or_file_path, name=None):
 
     return results
 
+def rearrange_matlab_psfs(psfs):
+    """
+    Rearranges PSFs from 2D or 3D format into a 3D array of shape (num_psfs, res, res).
+    If input is 3D, combines along axis 0 using sum or mean.
+    """
+    if psfs.ndim == 3:
+        if psfs.shape[2] == 1:
+            psfs = psfs[0, :, :]  # squeeze out first axis
+        else:
+            method = "sum"
+            if method == "sum":
+                psfs = np.sum(psfs, axis=0)
+            else:
+                psfs = np.mean(psfs, axis=0)
+
+    psf_resolution = psfs.shape[0]
+    num_psfs = psfs.shape[1] // psf_resolution
+    new_psfs = np.zeros((num_psfs, psf_resolution, psf_resolution))
+
+    for i in range(num_psfs):
+        new_psfs[i, :, :] = psfs[:, i * psf_resolution : (i + 1) * psf_resolution]
+
+    return new_psfs
+
+def load_matlab_results(output_path_or_file_path, name=None, recompute=False):
+    if os.path.isfile(output_path_or_file_path):
+        output_file = output_path_or_file_path
+    else:
+        if name is None:
+            raise SimulateException("Name must be provided if output_path is a directory")
+
+        output_file = f"{output_path_or_file_path}/{name}.mat"
+        if not os.path.isfile(output_file):
+            raise SimulateException(f"File not found: {output_file}")
+
+    if not recompute:
+        output_file = os.path.join(os.path.dirname(output_file), f"stats_{os.path.basename(output_file)}")
+
+    matlab_results = loadmat(output_file)
+
+    pixel_scale = matlab_results['parm']['pixelScale']*1000
+    wavelength = matlab_results['parm']['sci']['wavelength']
+    zenith_angle = matlab_results['parm']['atm']['zenithAngle']/np.pi*180
+    ee_size = 100.0 * u.mas
+    seeing = 0.6
+    grid_mode = 'hex'
+
+    ngs_zd = matlab_results['parm']['nGs']['zeTT'].flatten()
+    ngs_az = matlab_results['parm']['nGs']['azTT'].flatten()
+    ngs_mag = matlab_results['parm']['nGs']['TTmag'].flatten() - 1.26
+
+    lgs_n = int(matlab_results['parm']['lGs']['n'])
+    lgs_zd = matlab_results['parm']['lGs']['zenith']/np.pi*180*3600
+    lgs_az = matlab_results['parm']['lGs']['azimuth']/np.pi*180
+    lgs_mag = matlab_results['parm']['lGs']['magnitude']
+
+    lgs_zd = np.repeat(lgs_zd, lgs_n)
+    lgs_az = np.array([lgs_az + i*360/lgs_n for i in range(lgs_n)])
+    lgs_mag = np.repeat(lgs_mag, lgs_n)
+
+    r = matlab_results['parm']['sci']['RHO'].flatten()
+    theta = np.rad2deg(matlab_results['parm']['sci']['TH'].flatten())
+
+    results = {
+        'grid_mode': grid_mode,
+        'pixel_scale': pixel_scale,
+        'wavelength': wavelength,
+        'seeing': seeing,
+        'zenith_angle': zenith_angle,
+        'NGS_zd': ngs_zd,
+        'NGS_az': ngs_az,
+        'NGS_mag': ngs_mag,
+        'LGS_zd': lgs_zd,
+        'LGS_az': lgs_az,
+        'LGS_mag': lgs_mag,
+        'ee_size': ee_size,
+        'r': r,
+        'theta': theta
+    }
+
+    if recompute:
+        psfs = rearrange_matlab_psfs(matlab_results['psfs'])
+
+        tel_diameter = matlab_results['parm']['tel']['Dsupp']
+        pupil_file = os.path.join(os.path.dirname(output_file), 'pupil.mat')
+        if os.path.isfile(pupil_file):
+            tel_pupil = loadmat(pupil_file)['pupil']
+        else:
+            raise SimulateException(f"File pupil file is missing: {pupil_file}")
+
+        sr, fwhm, ee = stats.get_stats_matlab(psfs, tel_diameter, tel_pupil, wavelength, pixel_scale, ee_size)
+    else:
+        sr = matlab_results['sr']
+        fwhm = matlab_results['fwhm'] * 1000.0
+        ee = matlab_results['ee01']
+
+    results.update({
+        'sr': sr,
+        'fwhm': fwhm,
+        'ee': ee
+    })
+
+    return results
+
 def format_contour_label(x):
     s = f"{x:.2f}"
     if s.endswith("0"):
         s = f"{x:.1f}"
     return rf"{s}" if plt.rcParams["text.usetex"] else f"{s}"
 
-def plot_fov(results, plot_values='SR', fov=60.0*u.arcsec, skip_interpolation=False, fixed_range=False, plot_points=False):
-    N = len(results.r)
+def plot_fov(results, plot_value='SR', fov=60.0*u.arcsec, contours=None, skip_smoothing=False, skip_contours=False, fixed_range=False, plot_points=False):
+    N = len(results['r'])
     radius = fov.to(u.arcsec).value/2
 
-    match results.grid_mode:
+    match results['grid_mode']:
         case 'square':
-            mask = results.r <= radius
+            mask = results['r'] <= radius
         case 'hex':
             mask = np.ones(N, dtype=bool)
         case _:
-            raise SimulateException(f"Unsupported grid mode: {results.grid_mode}")
+            raise SimulateException(f"Unsupported grid mode: {results['grid_mode']}")
 
-    match plot_values:
+    match plot_value:
         case 'SR':
-            values = results.sr
+            values = results['sr']
         case 'FWHM':
-            values = results.fwhm
+            values = results['fwhm']
         case 'EE':
-            values = results.ee
+            values = results['ee']
 
     values_mean = np.mean(values[mask])
     values_std = np.std(values[mask])
-    values_range = np.max(values[mask]) - np.min(values[mask])
+    values_pv = np.max(values[mask]) - np.min(values[mask])
 
     m = 200
-    x = results.r * np.cos(np.deg2rad(results.theta))
-    y = results.r * np.sin(np.deg2rad(results.theta))
+    x = results['r'] * np.cos(np.deg2rad(results['theta']))
+    y = results['r'] * np.sin(np.deg2rad(results['theta']))
     xi = np.linspace(-radius, radius, m)
     yi = np.linspace(-radius, radius, m)
     X, Y = np.meshgrid(xi, yi)
-    if skip_interpolation:
+    if skip_smoothing:
         VALUES = griddata((x, y), values, (X, Y), method='nearest')
     else:
         VALUES = Rbf(x, y, values, function='cubic')(X, Y)
@@ -443,7 +366,7 @@ def plot_fov(results, plot_values='SR', fov=60.0*u.arcsec, skip_interpolation=Fa
     vmin = None
     vmax = None
 
-    match plot_values:
+    match plot_value:
         case 'SR':
             title = 'SR'
             bkg_label = "Strehl Ratio"
@@ -455,14 +378,14 @@ def plot_fov(results, plot_values='SR', fov=60.0*u.arcsec, skip_interpolation=Fa
             title = 'FWHM'
             bkg_label = 'FWHM [mas]'
             if fixed_range:
-                vmin = 60.0
-                vmax = 160.0
+                vmin = 40.0
+                vmax = 140.0
             cmap = 'plasma_r'
         case 'EE':
             title = 'EE'
-            bkg_label = f"EE [{results.ee_size.to(u.mas).value:.0f} mas]"
+            bkg_label = f"EE [{results['ee_size'].to(u.mas).value:.0f} mas]"
             if fixed_range:
-                vmin = 0.3
+                vmin = 0.01
                 vmax = 0.7
             cmap = 'plasma'
 
@@ -470,14 +393,19 @@ def plot_fov(results, plot_values='SR', fov=60.0*u.arcsec, skip_interpolation=Fa
     plt.rcParams.update({'font.family': 'Arial', 'font.size': 9})
 
     # Plot background
-    cn = ax.contour(xi, yi, VALUES, levels=8, linewidths=0.5, colors='k')
+    if not skip_contours:
+        if contours is not None:
+            levels = contours
+        else:
+            levels = 8
+        cn = ax.contour(xi, yi, VALUES, levels=levels, linewidths=0.5, colors='k')
+        ax.clabel(cn, cn.levels, inline=True, fmt=format_contour_label, fontsize=8)
     im = ax.imshow(VALUES*MASK, extent=[xi[0], xi[-1], yi[0], yi[-1]], origin='lower', cmap=cmap, vmin=vmin, vmax=vmax)
     ax.set_xticks(np.linspace(-radius, radius, 5))
     ax.set_yticks(np.linspace(-radius, radius, 5))
     ax.set_xlabel('["/Sky]')
     ax.set_ylabel('["/Sky]')
-    ax.set_title(f"{title} Mean={values_mean:.2f}, Std={values_std:.2f}, Range={values_range:.2f}", fontweight='bold')
-    ax.clabel(cn, cn.levels, inline=True, fmt=format_contour_label, fontsize=8)
+    ax.set_title(f"{title} Mean={values_mean:.2f}, Std={values_std:.2f}, PV={values_pv:.2f}", fontweight='bold')
     cbar = fig.colorbar(im, ax=ax, shrink=0.7)
     cbar.ax.set_ylabel(bkg_label)
 
@@ -486,28 +414,83 @@ def plot_fov(results, plot_values='SR', fov=60.0*u.arcsec, skip_interpolation=Fa
     ax.add_patch(circle)
 
     # Plot the NGS
-    for i, (zd, az) in enumerate(zip(results.NGS_zd, results.NGS_az)):
+    for i, (zd, az) in enumerate(zip(results['NGS_zd'], results['NGS_az'])):
         x = zd * np.cos(np.deg2rad(az))
         y = zd * np.sin(np.deg2rad(az))
         plt.scatter(x, y, marker=(5, 1), facecolor='red', edgecolors='k', s=100, linewidths=0.5)
 
     # Plot the LGS
-    for i, (zd, az) in enumerate(zip(results.LGS_zd, results.LGS_az)):
+    for i, (zd, az) in enumerate(zip(results['LGS_zd'], results['LGS_az'])):
         x = zd * np.cos(np.deg2rad(az))
         y = zd * np.sin(np.deg2rad(az))
-        circle = plt.Circle((x, y), 4, fill=True, color='orange', linewidth=1)
         plt.scatter(x, y, marker=(5, 1), facecolor='yellow', edgecolor='k', s=200, linewidths=0.5)
 
     # Plot FWHM at each point
     if plot_points:
-        for i, (zd, az) in enumerate(zip(results.r, results.theta)):
+        for i, (zd, az) in enumerate(zip(results['r'], results['theta'])):
             x = zd * np.cos(np.deg2rad(az))
             y = zd * np.sin(np.deg2rad(az))
-            fwhm = results.fwhm[i] / 1000.0 # mas -> arcsec
+            fwhm = results['fwhm'][i] / 1000.0 # mas -> arcsec
             circle = plt.Circle((x, y), fwhm/2, fill=False, color='k', linewidth=1)
             ax.add_patch(circle)
 
     ax.set_aspect('equal')
     ax.set_xlim(-radius, radius)
     ax.set_ylim(-radius, radius)
+    plt.show()
+
+def plot_psf(results, index=0, zoom=None, skip_peak_norm=False, skip_cbar=False, fixed_range=False):
+
+    # TODO: option to zoom in to 1.5 * FWHM
+    # TODO: option to plot EE box
+
+    cmap = 'hot'
+
+    psf = results['psfs'][index]
+    if not skip_peak_norm:
+        psf = psf / np.max(psf)
+    psf = np.log10(np.abs(psf))
+
+    if 'pixel_scale' not in results:
+        pixel_scale = 7.0 # HACK!!!
+    else:
+        pixel_scale = results['pixel_scale']
+
+    Nx   = psf.shape[0]
+    Ny   = psf.shape[1]
+    xlim = [-Nx//2*pixel_scale, Nx//2*pixel_scale]
+    ylim = [-Ny//2*pixel_scale, Ny//2*pixel_scale]
+    x    = np.linspace(xlim[0], xlim[1], Nx)
+    y    = np.linspace(ylim[0], ylim[1], Ny)
+
+    if zoom is not None:
+        if isinstance(zoom, u.Quantity):
+            zoom_px = int(zoom.to(u.mas).value/pixel_scale)
+        else:
+            zoom_px = int(results['fwhm'][index]*zoom/pixel_scale/2)
+        xlim = [-zoom_px*pixel_scale, zoom_px*pixel_scale]
+        ylim = [-zoom_px*pixel_scale, zoom_px*pixel_scale]
+        x    = x[Nx//2-zoom_px:Nx//2+zoom_px]
+        y    = y[Ny//2-zoom_px:Ny//2+zoom_px]
+        psf  = psf[Nx//2-zoom_px:Nx//2+zoom_px,Ny//2-zoom_px:Ny//2+zoom_px]
+
+    if fixed_range:
+        vmin = -4
+        vmax = 0
+    else:
+        vmin = None
+        vmax = None
+
+    levels = [-5.5, -5, -4.5, -4, -3.5, -3, -2.5, -2, -1.5, -1]
+
+    fig, ax = plt.subplots(figsize=[5,5])
+    im = ax.imshow(psf, extent=[xlim[0], xlim[1], ylim[0], ylim[1]], cmap=cmap, vmin=vmin, vmax=vmax, origin='lower')
+    cn = ax.contour(x, y, psf, levels=levels, colors='white', linewidths=0.5)
+    ax.clabel(cn, cn.levels, inline=True, fmt=format_contour_label, fontsize=8)
+    if not skip_cbar:
+        cbar = fig.colorbar(im, ax=ax, format='%.1f')
+        cbar.set_label(f"Log {'Relative ' if not skip_peak_norm else ''}Intensity")
+    ax.set_xlabel('[mas/Sky]')
+    ax.set_ylabel('[mas/Sky]')
+    plt.title(f"Center: r={results['r'][index]:.1f}\", theta={results['theta'][index]:.1f}°\nSR={results['sr'][index]:.2f}, FWHM={results['fwhm'][index]:.0f} mas, EE{results['ee_size'].value:.0f}={results['ee'][index]:.2f}")
     plt.show()

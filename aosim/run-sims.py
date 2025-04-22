@@ -34,20 +34,12 @@ def run(options, i, r, theta):
 
     sim_start_time = time.time()
 
-    if options.save_fits:
-        sim_results, simulation = simulate.run_simulation(
-            sim_name, options.ini_filename, options.wavelength, options.zenith_angle, options.seeing, r, theta,
-            ee_size=options.ee_size, opt_type=options.opt_type, output_path=options.output_path,
-            do_plot=False, verbose=options.verbosity>2, return_simulation=True
-        )
-
-        simulate.save_results_fits(options.output_path, options.name, sim_results, simulation)
-    else:
-        sim_results = simulate.run_simulation(
-            sim_name, options.ini_filename, options.wavelength, options.zenith_angle, options.seeing, r, theta,
-            ee_size=options.ee_size, opt_type=options.opt_type, output_path=options.output_path,
-            do_plot=False, verbose=options.verbosity>2, return_simulation=False
-        )
+    sim_results, _ = simulate.run_simulation(
+        sim_name, options.ini_filename, options.wavelength, options.zenith_angle, options.seeing,
+        r, theta, optimization_r=options.ltao_r, optimization_theta=options.ltao_theta,
+        ee_size=options.ee_size, output_path=options.output_path,
+        do_plot=False, verbose=options.verbosity>2
+    )
 
     if options.verbosity > 0 or options.num_sims == 1:
         elapsed_time = time.time() - sim_start_time
@@ -57,9 +49,6 @@ def run(options, i, r, theta):
         else:
             print(f"{str(i).rjust(num_digits)}/{options.num_sims}: Simulation Time: {elapsed_time:.1f} sec")
 
-        if options.save_fits:
-            print(f"Output File    : {sim_name}.fits")
-
     return sim_results
 
 def main():
@@ -67,20 +56,20 @@ def main():
     # Read configuration
     ################################################################################
 
-    debug = False
+    debug = True
 
     options = StructType()
     if debug or os.getenv("DEBUG", "0") == "1" or bool(sys.gettrace()):
         options.test_case = 'MOAO' # 'GNAO', 'MOAO', 'MOAO-serial'
         options.ini_filename = 'GIRMOS.ini'
-        options.grid_mode = 'square'
+        options.grid_mode = 'hex'
         options.wavelength = 1.650 * u.micron
         options.zenith_angle = 30.0 * u.deg
         options.seeing = 0.6 * u.arcsec
         options.ee_size = 100.0 * u.mas
-        options.save_fits = False
         options.num_threads = 1
         options.profile = False
+        options.load_test = False
         options.verbosity = True
     else:
         parser = argparse.ArgumentParser(description="Run TIPTOP simulations.")
@@ -90,7 +79,6 @@ def main():
         parser.add_argument('--zenith', type=float, default=None, help="Override the Zenith Angle in degrees from the INI file.")
         parser.add_argument('--seeing', type=float, default=None, help="Override the seeing in arcsec from the INI file.")
         parser.add_argument('--ee_size', type=float, default=100.0, help="Ensquared Energy size in mas (default: 100.0).")
-        parser.add_argument('--save_fits', action='store_true', help="Save results in FITS format.")
         parser.add_argument('--threads', type=int, default=1, help="Number of threads to use (default: 1).")
         parser.add_argument('--profile', action='store_true', help="Enable profiling.")
         parser.add_argument('--load_test', action='store_true', help="Load test data instead of running a new simulation.")
@@ -111,7 +99,6 @@ def main():
         if options.seeing is not None:
             options.seeing = options.seeing * u.arcsec
         options.ee_size = args.ee_size * u.mas
-        options.save_fits = args.save_fits
         options.num_threads = args.threads
         options.profile = args.profile
         options.load_test = args.load_test
@@ -138,23 +125,34 @@ def main():
         if options.seeing is None:
             options.seeing = float(config['atmosphere']['Seeing'].strip('[]')) * u.arcsec
 
-    match options.test_case:
-        case 'GNAO':
-            options.opt_type = 'normal'
-        case 'MOAO-serial':
-            options.opt_type = 'normal'
-        case 'MOAO':
-            options.opt_type = 'MOAO'
+    ltao_fov = 85.0 # arcsec
+    fov = 120.0 # arcsec
+
+    ################################################################################
+    # LTAO optimization points
+    ################################################################################
+
+    # ltao_radius = ltao_fov/2.0
+    # N = 5
+    # x = np.linspace(-ltao_radius, ltao_radius, N)
+    # y = np.linspace(-ltao_radius, ltao_radius, N)
+    # grid_x, grid_y = np.meshgrid(x, y)
+    # options.ltao_r = np.sqrt(grid_x**2 + grid_y**2).flatten()
+    # options.ltao_theta = np.rad2deg(np.arctan2(grid_y, grid_x)).flatten()
+
+    radius = fov/2.0
+    num_rings = 4
+    points, _ = tessellate.tessellate_circle_with_hexagons(num_rings, radius)
+    options.ltao_r, options.ltao_theta = tessellate.to_polar_coordinates(points)
+    options.ltao_theta = np.rad2deg(options.ltao_theta)
 
     ################################################################################
     # Create a grid of points in the focal plane
     ################################################################################
 
-    fov = 120.0 # arcsec
-    radius = fov / 2.0
-
     match options.grid_mode:
         case 'square':
+            radius = fov/2.0
             N = 11
             x = np.linspace(-radius, radius, N)
             y = np.linspace(-radius, radius, N)
@@ -162,6 +160,7 @@ def main():
             r = np.sqrt(grid_x**2 + grid_y**2).flatten()
             theta = np.rad2deg(np.arctan2(grid_y, grid_x)).flatten()
         case 'hex':
+            radius = fov/2.0
             num_rings = 5
             points, _ = tessellate.tessellate_circle_with_hexagons(num_rings, radius)
             r, theta = tessellate.to_polar_coordinates(points)
@@ -227,20 +226,16 @@ def main():
 
         if not options.load_test:
             results = all_results[0]
-            results.r = np.array([result.r for result in all_results])
-            results.theta = np.array([result.theta for result in all_results])
-            results.psfs = np.concatenate([result.psfs for result in all_results], axis=0)
-            results.sr = np.concatenate([result.sr for result in all_results], axis=0)
-            results.fwhm = np.concatenate([result.fwhm for result in all_results], axis=0)
-            results.ee = np.concatenate([result.ee for result in all_results], axis=0)
+            results['r'] = np.array([result['r'] for result in all_results])
+            results['theta'] = np.array([result['theta'] for result in all_results])
+            results['psfs'] = np.concatenate([result['psfs'] for result in all_results], axis=0)
+            results['sr'] = np.concatenate([result['sr'] for result in all_results], axis=0)
+            results['fwhm'] = np.concatenate([result['fwhm'] for result in all_results], axis=0)
+            results['ee'] = np.concatenate([result['ee'] for result in all_results], axis=0)
 
     if not options.load_test:
-        results.grid_mode = options.grid_mode
+        results['grid_mode'] = options.grid_mode
+        simulate.save_results(options.output_path, options.name, results, verbose=options.verbosity>0)
 
-        simulate.save_results(options.output_path, options.name, results)
-
-main()
-
-# TODO:
-# 5. Pass pointing details NGS ra/dec, NGS mag
-# 6. Save results of many sims in summary table
+if __name__ == "__main__":
+    main()

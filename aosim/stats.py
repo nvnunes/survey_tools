@@ -24,12 +24,23 @@ def cpuArray(v):
     else:
         return v.get()
 
-def get_stats(psfs, wavelength, tel_radius, pixel_scale, pupil, ee_radius):
-    psfs_centered = _center_psfs(np.asarray(psfs), normalize=True)
+def get_stats(simulation):
+    psfs = np.array([img.sampling for img in simulation.results])
+    psfs_centered = _center_psfs(psfs, normalize=True)
 
-    SR = _get_strehl(psfs_centered, pupil, wavelength, tel_radius, pixel_scale, assume_centered=True, assume_normalized=True)
+    SR = _get_strehl(psfs_centered, simulation.fao.ao.tel.pupil, simulation.wvl[0], simulation.tel_radius, simulation.psInMas, assume_centered=True, assume_normalized=True)
+    FWHM = _get_FWHM(psfs_centered, simulation.psInMas, assume_centered=True)
+    EE = _get_ensquared_energy_at_radius(psfs_centered, simulation.eeRadiusInMas, simulation.psInMas, assume_centered=True)
+
+    return cpuArray(psfs), cpuArray(SR), cpuArray(FWHM), cpuArray(EE)
+
+def get_stats_matlab(psfs, tel_diameter, tel_pupil, wavelength, pixel_scale, ee_size):
+    psfs = np.array(psfs)
+    psfs_centered = _center_psfs(psfs, normalize=True)
+
+    SR = _get_strehl(psfs_centered, np.array(tel_pupil), wavelength, tel_diameter/2, pixel_scale, assume_centered=True, assume_normalized=True)
     FWHM = _get_FWHM(psfs_centered, pixel_scale, assume_centered=True)
-    EE = _get_ensquared_energy_at_radius(psfs_centered, ee_radius, pixel_scale, assume_centered=True)
+    EE = _get_ensquared_energy_at_radius(psfs_centered, ee_size/2, pixel_scale, assume_centered=True)
 
     return cpuArray(SR), cpuArray(FWHM), cpuArray(EE)
 

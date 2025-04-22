@@ -20,7 +20,7 @@ Ensure you have the following software installed:
    ```
 2. Install torch (in MacOS, use Anaconda to install as pip3 may not work)
    ```bash
-   condo install pytorch
+   conda install pytorch
    ```
 3. Install survey_tools locally as an editable package:
    ```bash
