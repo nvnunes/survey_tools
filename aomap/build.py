@@ -15,8 +15,12 @@ import aomap
 ####################################################################################
 
 mode = 'build' # build, rebuild, recalc
-verbose = True
+verbose = False
+max_ao_rank = 3
 
 config = aomap.read_config('config.yaml')
-aomap.build_inner(config, mode=mode, verbose=verbose)
+aomap.build_inner(config, mode=mode, max_ao_rank=max_ao_rank, verbose=verbose)
+aomap.append_asterism_dust(config, mode=mode, verbose=verbose)
+aomap.append_asterism_counts(config, mode=mode, verbose=verbose)
 aomap.build_data(config, mode=mode, verbose=verbose)
+aomap.build_survey_extent(config, verbose=verbose)

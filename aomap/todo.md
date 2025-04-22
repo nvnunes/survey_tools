@@ -8,40 +8,25 @@ DONE Phase 0:
 1. DONE Find promising areas for AO based on stellar density
 1. DONE Optionally limit processing based on HEALpix level and pix
 
-Phase 1:
-1. Load dust map and compute extinction per inner pixel
-1. Optionally draw contours of extinction on map
-1. Load Zodiacal light model and compute emission per inner pixel
-   (https://cosmoglobe.github.io/zodipy/)
-1. Optionally draw contours of emission on map
-1. Load regions covered by important surveys:
-    - Euclid EWS
-    - Important extra-galactic fields
-1. Optionally draw outlines of regions on map
-1. Create table with average outer pix values by extra-galactic fields
-1. Find patches of sky where:
-    - higher probability of a nominal NGS asterism (NGS density = 3/FOV / factor)
-    - good probability of a single bright NGS (NGS density = 1/FOV / factor)
-        = where factor = 1 meaning 100% of healpix exceeds above limits on average
-        = try increase (corresponding lower % of healpix) if:
-            - nothing found (i.e. trade-off)
-            - remaining healpix at unreasonably low galactic latitude
-    - reasonably low dust extinction
-    - reasonably low zodiacal light emission
-1. Optionally limit processing based on:
-    - stellar density
-    - dust extinction
-    - zodiacal light emission
-    - region
+DONE Phase 1:
+1. DONE Load dust map and compute extinction per inner pixel
+1. DONE Optionally draw contours of extinction on map
+1. DONE Load Zodiacal light model and study emission versus ecliptic latitude (https://cosmoglobe.github.io/zodipy/)
+1. DONE Load outline of EWS and plot position of 3D-HST fields
+1. DONE Optionally draw outlines of regions on map
+1. DONE Plot wide spectroscopic surveys (Euclid, DESI) 
+1. DONE Find patches of sky where:
+    - DONE reasonably high stellar density
+    - DONE reasonably low dust extinction (Av < 0.3)
+    - DONE reasonably low zodiacal light emission (cut on ecliptic latitude)
+1. DONE Update AO fields based on Av < 0.3
 
-Phase 2:
-1. Find n-star asterisms in each outer pix
-1. Reduce number of overlapping asterisms
-1. Count remaining asterisms within an FOV of each inner pix
-1. Make map of average asterism counts per inner pix
-1. Compute percent area covered by inner pix with at least one asterism
-1. AO friendliness based on asterism coverage instead of stellar density
-1. Search for individual asterisms in areas of low overall AO friendliness
+DONE Phase 2:
+1. DONE Find n-star asterisms in each outer pix
+1. DONE Reduce number of overlapping asterisms
+1. DONE Count remaining asterisms within an FOV of each inner pix
+1. DONE Make map of asterism counts per inner pix
+1. DONE Compute percent area covered by inner pix with at least one asterism
 
 Phase 3:
 1. Install Tip Top and configure for reference AO system
