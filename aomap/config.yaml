@@ -1,12 +1,13 @@
 folder: ../data/maps
-cores: 6                      #  1: no parallelism, >1: number of cores, -1: all cores
+cores: 10                     #  1: no parallelism, >1: number of cores, -1: all cores
 chunk_multiple: 10            #  0: skip chunking, chunk_size = cores * chunk_multiple = number of pixels computed between updates to disk
 outer_level: 6                #  6: 55 arcmin resolution
 max_data_level: 9             #  9:  7 arcmin resolution
 inner_level: 14               # 14: 13 arcsec resolution
+asterism_epoch: 2028.0        # epoch for star coordinates
 
-build_level: 1                # limit building to specific level
-build_pixs: 26                # limit building to specific pixels
+#build_level: 1                # limit building to specific level
+#build_pixs: 26                # limit building to specific pixels
 
 ao_systems:
   - name: GNAO-Limit

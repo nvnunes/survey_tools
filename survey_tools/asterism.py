@@ -19,7 +19,7 @@ class AsterismException(Exception):
 
 #region Find
 
-def find_asterisms(star_data, id_field = 'id', ra_field = 'ra', dec_field = 'dec', mag_field = 'mag', min_stars = 1, max_stars = 1, min_separation = 0.0, max_separation = 60.0, max_1ngs_distance = 30.0, verbose=False):
+def find_asterisms(star_data, id_field = 'id', ra_field = 'ra', dec_field = 'dec', pmra_field='pmra', pmdec_field='pmdec', ref_epoch_field='ref_epoch', mag_field = 'mag', min_stars = 1, max_stars = 1, min_separation = 0.0, max_separation = 60.0, max_1ngs_distance = 30.0, verbose=False):
     star_catalog = SkyCoord(ra=star_data[ra_field], dec=star_data[dec_field], unit=(u.degree, u.degree))
 
     # Find stars that are close to each other
@@ -47,7 +47,7 @@ def find_asterisms(star_data, id_field = 'id', ra_field = 'ra', dec_field = 'dec
         if min_stars <= 1 and star_idx1s[i] == star_idx2s[i]:
             # Add single star asterism
             asterism_star_indexes, _ = _sort_star_indexes(star_idx1s[i])
-            _add_asterism(buffer, asterism_star_indexes, star_data, id_field, ra_field, dec_field, mag_field, max_separation, max_1ngs_distance)
+            _add_asterism(buffer, asterism_star_indexes, star_data, id_field, ra_field, dec_field, pmra_field, pmdec_field, ref_epoch_field, mag_field, max_separation, max_1ngs_distance)
 
         if max_stars == 1:
             continue
@@ -67,7 +67,7 @@ def find_asterisms(star_data, id_field = 'id', ra_field = 'ra', dec_field = 'dec
             for j in np.arange(len(sorted_close_idxs)):
                 asterism_star_indexes, asterism_key = _sort_star_indexes(star_idx1s[i], sorted_close_idxs[j])
                 if min_stars <= 2 and asterism_key not in added_keys:
-                    _add_asterism(buffer, asterism_star_indexes, star_data, id_field, ra_field, dec_field, mag_field, max_separation, max_1ngs_distance)
+                    _add_asterism(buffer, asterism_star_indexes, star_data, id_field, ra_field, dec_field, pmra_field, pmdec_field, ref_epoch_field, mag_field, max_separation, max_1ngs_distance)
                     added_keys[asterism_key] = True
 
                 if max_stars == 2:
@@ -76,7 +76,7 @@ def find_asterisms(star_data, id_field = 'id', ra_field = 'ra', dec_field = 'dec
                 for k in np.arange(j+1, len(sorted_close_idxs)):
                     asterism_star_indexes, asterism_key = _sort_star_indexes(star_idx1s[i], sorted_close_idxs[j], sorted_close_idxs[k])
                     if asterism_key not in added_keys:
-                        _add_asterism(buffer, asterism_star_indexes, star_data, id_field, ra_field, dec_field, mag_field, max_separation, max_1ngs_distance)
+                        _add_asterism(buffer, asterism_star_indexes, star_data, id_field, ra_field, dec_field, pmra_field, pmdec_field, ref_epoch_field, mag_field, max_separation, max_1ngs_distance)
                         added_keys[asterism_key] = True
 
             close_idxs = []
@@ -90,23 +90,23 @@ def find_asterisms(star_data, id_field = 'id', ra_field = 'ra', dec_field = 'dec
 
     # Create table using buffer
     asterisms = Table([
-        np.arange(buffer.N)+1, buffer.key, buffer.ra, buffer.dec, buffer.num_stars,
-        buffer.star1_idx, buffer.star1_id, buffer.star1_ra, buffer.star1_dec, buffer.star1_mag,
-        buffer.star2_idx, buffer.star2_id, buffer.star2_ra, buffer.star2_dec, buffer.star2_mag,
-        buffer.star3_idx, buffer.star3_id, buffer.star3_ra, buffer.star3_dec, buffer.star3_mag,
+        np.arange(buffer.N)+1, buffer.ra, buffer.dec, buffer.num_stars,
+        buffer.star1_idx, buffer.star1_id, buffer.star1_ra, buffer.star1_dec, buffer.star1_pmra, buffer.star1_pmdec, buffer.star1_pmepoch, buffer.star1_mag,
+        buffer.star2_idx, buffer.star2_id, buffer.star2_ra, buffer.star2_dec, buffer.star2_pmra, buffer.star2_pmdec, buffer.star2_pmepoch, buffer.star2_mag,
+        buffer.star3_idx, buffer.star3_id, buffer.star3_ra, buffer.star3_dec, buffer.star3_pmra, buffer.star3_pmdec, buffer.star3_pmepoch, buffer.star3_mag,
         buffer.radius, buffer.area, buffer.relarea, buffer.separation, buffer.relsep
     ], names=[
-        'id', 'key', 'ra', 'dec', 'num_stars',
-        'star1_idx', 'star1_id', 'star1_ra', 'star1_dec', 'star1_mag',
-        'star2_idx', 'star2_id', 'star2_ra', 'star2_dec', 'star2_mag',
-        'star3_idx', 'star3_id', 'star3_ra', 'star3_dec', 'star3_mag',
+        'id', 'ra', 'dec', 'num_stars',
+        'star1_idx', 'star1_id', 'star1_ra', 'star1_dec', 'star1_pmra', 'star1_pmdec', 'star1_pmepoch', 'star1_mag',
+        'star2_idx', 'star2_id', 'star2_ra', 'star2_dec', 'star2_pmra', 'star2_pmdec', 'star2_pmepoch', 'star2_mag',
+        'star3_idx', 'star3_id', 'star3_ra', 'star3_dec', 'star3_pmra', 'star3_pmdec', 'star3_pmepoch', 'star3_mag',
         'radius', 'area', 'relarea', 'separation', 'relsep'
     ])
 
     return asterisms
 
 # pylint: disable=possibly-used-before-assignment
-def _add_asterism(buffer, star_indexes, star_data, id_field, ra_field, dec_field, mag_field, max_separation, max_1ngs_distance):
+def _add_asterism(buffer, star_indexes, star_data, id_field, ra_field, dec_field, pmra_field, pmdec_field, ref_epoch_field, mag_field, max_separation, max_1ngs_distance):
     # area of equilateral triangle that fits within circle of radius max_separation/4 (i.e. middle of FOV)
     optimal_star_area = 3.0/4.0*np.sqrt(3.0)*np.power(max_separation/4, 2)
 
@@ -118,33 +118,42 @@ def _add_asterism(buffer, star_indexes, star_data, id_field, ra_field, dec_field
     if num_stars > 3:
         raise IndexError('Maximum of 3 stars supported')
 
-    id1  = star_data[id_field][star_indexes[0]]
-    ra1  = star_data[ra_field][star_indexes[0]]
-    dec1 = star_data[dec_field][star_indexes[0]]
-    m1   = star_data[mag_field][star_indexes[0]]
-    ra1_rad = np.deg2rad(ra1)
-    dec1_rad = np.deg2rad(dec1)
-    star_ids = [id1]
+    id1        = star_data[id_field][star_indexes[0]]
+    ra1        = star_data[ra_field][star_indexes[0]]
+    dec1       = star_data[dec_field][star_indexes[0]]
+    pmra1      = star_data[pmra_field][star_indexes[0]]
+    pmdec1     = star_data[pmdec_field][star_indexes[0]]
+    pmepoch1   = star_data[ref_epoch_field][star_indexes[0]]
+    m1         = star_data[mag_field][star_indexes[0]]
+    ra1_rad    = np.deg2rad(ra1)
+    dec1_rad   = np.deg2rad(dec1)
+    star_ids   = [id1]
 
     if num_stars >= 2:
-        id2  = star_data[id_field][star_indexes[1]]
-        ra2  = star_data[ra_field][star_indexes[1]]
-        dec2 = star_data[dec_field][star_indexes[1]]
-        m2   = star_data[mag_field][star_indexes[1]]
-        ra2_rad  = np.deg2rad(ra2)
-        dec2_rad = np.deg2rad(dec2)
-        l1   = np.rad2deg(np.sqrt(((ra1_rad-ra2_rad)*np.cos(dec1_rad))**2 + (dec1_rad-dec2_rad)**2)) * 3600.0 # arcsec
+        id2        = star_data[id_field][star_indexes[1]]
+        ra2        = star_data[ra_field][star_indexes[1]]
+        dec2       = star_data[dec_field][star_indexes[1]]
+        pmra2      = star_data[pmra_field][star_indexes[1]]
+        pmdec2     = star_data[pmdec_field][star_indexes[1]]
+        pmepoch2   = star_data[ref_epoch_field][star_indexes[1]]
+        m2         = star_data[mag_field][star_indexes[1]]
+        ra2_rad    = np.deg2rad(ra2)
+        dec2_rad   = np.deg2rad(dec2)
+        l1         = np.rad2deg(np.sqrt(((ra1_rad-ra2_rad)*np.cos(dec1_rad))**2 + (dec1_rad-dec2_rad)**2)) * 3600.0 # arcsec
         star_ids.append(id2)
 
     if num_stars == 3:
-        id3  = star_data[id_field][star_indexes[2]]
-        ra3  = star_data[ra_field][star_indexes[2]]
-        dec3 = star_data[dec_field][star_indexes[2]]
-        m3   = star_data[mag_field][star_indexes[2]]
-        ra3_rad  = np.deg2rad(ra3)
-        dec3_rad = np.deg2rad(dec3)
-        l2   = np.rad2deg(np.sqrt(((ra2_rad-ra3_rad)*np.cos(dec2_rad))**2 + (dec2_rad-dec3_rad)**2)) * 3600.0 # arcsec
-        l3   = np.rad2deg(np.sqrt(((ra3_rad-ra1_rad)*np.cos(dec3_rad))**2 + (dec3_rad-dec1_rad)**2)) * 3600.0 # arcsec
+        id3        = star_data[id_field][star_indexes[2]]
+        ra3        = star_data[ra_field][star_indexes[2]]
+        dec3       = star_data[dec_field][star_indexes[2]]
+        pmra3      = star_data[pmra_field][star_indexes[2]]
+        pmdec3     = star_data[pmdec_field][star_indexes[2]]
+        pmepoch3   = star_data[ref_epoch_field][star_indexes[2]]
+        m3         = star_data[mag_field][star_indexes[2]]
+        ra3_rad    = np.deg2rad(ra3)
+        dec3_rad   = np.deg2rad(dec3)
+        l2         = np.rad2deg(np.sqrt(((ra2_rad-ra3_rad)*np.cos(dec2_rad))**2 + (dec2_rad-dec3_rad)**2)) * 3600.0 # arcsec
+        l3         = np.rad2deg(np.sqrt(((ra3_rad-ra1_rad)*np.cos(dec3_rad))**2 + (dec3_rad-dec1_rad)**2)) * 3600.0 # arcsec
         star_ids.append(id3)
 
     star_ids = np.sort(star_ids)
@@ -231,87 +240,114 @@ def _add_asterism(buffer, star_indexes, star_data, id_field, ra_field, dec_field
 
     buffer.N += 1
     buffer.idx += 1
-    buffer.key       [-1][buffer.idx] = key
-    buffer.ra        [-1][buffer.idx] = np.rad2deg(centre_ra)
-    buffer.dec       [-1][buffer.idx] = np.rad2deg(centre_dec)
-    buffer.num_stars [-1][buffer.idx] = num_stars
-    buffer.star1_idx [-1][buffer.idx] = star_indexes[0]
-    buffer.star1_id  [-1][buffer.idx] = id1
-    buffer.star1_ra  [-1][buffer.idx] = ra1
-    buffer.star1_dec [-1][buffer.idx] = dec1
-    buffer.star1_mag [-1][buffer.idx] = m1
-    buffer.star2_idx [-1][buffer.idx] = star_indexes[1] if num_stars >= 2 else -1
-    buffer.star2_id  [-1][buffer.idx] = id2 if num_stars >= 2 else -1
-    buffer.star2_ra  [-1][buffer.idx] = ra2 if num_stars >= 2 else -1
-    buffer.star2_dec [-1][buffer.idx] = dec2 if num_stars >= 2 else -1
-    buffer.star2_mag [-1][buffer.idx] = m2 if num_stars >= 2 else -1
-    buffer.star3_idx [-1][buffer.idx] = star_indexes[2] if num_stars >= 3 else -1
-    buffer.star3_id  [-1][buffer.idx] = id3 if num_stars >= 3 else -1
-    buffer.star3_ra  [-1][buffer.idx] = ra3 if num_stars >= 3 else -1
-    buffer.star3_dec [-1][buffer.idx] = dec3 if num_stars >= 3 else -1
-    buffer.star3_mag [-1][buffer.idx] = m3 if num_stars >= 3 else -1
-    buffer.radius    [-1][buffer.idx] = radius
-    buffer.area      [-1][buffer.idx] = area
-    buffer.relarea   [-1][buffer.idx] = relative_area
-    buffer.separation[-1][buffer.idx] = separation
-    buffer.relsep    [-1][buffer.idx] = relative_separation
+    buffer.key          [-1][buffer.idx] = key
+    buffer.ra           [-1][buffer.idx] = np.rad2deg(centre_ra)
+    buffer.dec          [-1][buffer.idx] = np.rad2deg(centre_dec)
+    buffer.num_stars    [-1][buffer.idx] = num_stars
+    buffer.star1_idx    [-1][buffer.idx] = star_indexes[0]
+    buffer.star1_id     [-1][buffer.idx] = id1
+    buffer.star1_ra     [-1][buffer.idx] = ra1
+    buffer.star1_dec    [-1][buffer.idx] = dec1
+    buffer.star1_pmra   [-1][buffer.idx] = pmra1
+    buffer.star1_pmdec  [-1][buffer.idx] = pmdec1
+    buffer.star1_pmepoch[-1][buffer.idx] = pmepoch1
+    buffer.star1_mag    [-1][buffer.idx] = m1
+    buffer.star2_idx    [-1][buffer.idx] = star_indexes[1] if num_stars >= 2 else -1
+    buffer.star2_id     [-1][buffer.idx] = id2 if num_stars >= 2 else -1
+    buffer.star2_ra     [-1][buffer.idx] = ra2 if num_stars >= 2 else -1
+    buffer.star2_dec    [-1][buffer.idx] = dec2 if num_stars >= 2 else -1
+    buffer.star2_pmra   [-1][buffer.idx] = pmra2 if num_stars >= 2 else -1
+    buffer.star2_pmdec  [-1][buffer.idx] = pmdec2 if num_stars >= 2 else -1
+    buffer.star2_pmepoch[-1][buffer.idx] = pmepoch2 if num_stars >= 2 else -1
+    buffer.star2_mag    [-1][buffer.idx] = m2 if num_stars >= 2 else -1
+    buffer.star3_idx    [-1][buffer.idx] = star_indexes[2] if num_stars >= 3 else -1
+    buffer.star3_id     [-1][buffer.idx] = id3 if num_stars >= 3 else -1
+    buffer.star3_ra     [-1][buffer.idx] = ra3 if num_stars >= 3 else -1
+    buffer.star3_dec    [-1][buffer.idx] = dec3 if num_stars >= 3 else -1
+    buffer.star3_pmra   [-1][buffer.idx] = pmra3 if num_stars >= 3 else -1
+    buffer.star3_pmdec  [-1][buffer.idx] = pmdec3 if num_stars >= 3 else -1
+    buffer.star3_pmepoch[-1][buffer.idx] = pmepoch3 if num_stars >= 3 else -1
+    buffer.star3_mag    [-1][buffer.idx] = m3 if num_stars >= 3 else -1
+    buffer.radius       [-1][buffer.idx] = radius
+    buffer.area         [-1][buffer.idx] = area
+    buffer.relarea      [-1][buffer.idx] = relative_area
+    buffer.separation   [-1][buffer.idx] = separation
+    buffer.relsep       [-1][buffer.idx] = relative_separation
 
 def _create_asterisms_buffer():
     buffer = StructType()
     buffer.N = 0
     buffer.max_size = 10000
     buffer.idx = -1
-    buffer.key        = []
-    buffer.ra         = []
-    buffer.dec        = []
-    buffer.num_stars  = []
-    buffer.star1_idx  = []
-    buffer.star1_id   = []
-    buffer.star1_ra   = []
-    buffer.star1_dec  = []
-    buffer.star1_mag  = []
-    buffer.star2_idx  = []
-    buffer.star2_id   = []
-    buffer.star2_ra   = []
-    buffer.star2_dec  = []
-    buffer.star2_mag  = []
-    buffer.star3_idx  = []
-    buffer.star3_id   = []
-    buffer.star3_ra   = []
-    buffer.star3_dec  = []
-    buffer.star3_mag  = []
-    buffer.radius     = []
-    buffer.area       = []
-    buffer.relarea    = []
-    buffer.separation = []
-    buffer.relsep     = []
+    buffer.key          = []
+    buffer.ra           = []
+    buffer.dec          = []
+    buffer.num_stars    = []
+    buffer.star1_idx    = []
+    buffer.star1_id     = []
+    buffer.star1_ra     = []
+    buffer.star1_dec    = []
+    buffer.star1_pmra   = []
+    buffer.star1_pmdec  = []
+    buffer.star1_pmepoch= []
+    buffer.star1_mag    = []
+    buffer.star2_idx    = []
+    buffer.star2_id     = []
+    buffer.star2_ra     = []
+    buffer.star2_dec    = []
+    buffer.star2_pmra   = []
+    buffer.star2_pmdec  = []
+    buffer.star2_pmepoch= []
+    buffer.star2_mag    = []
+    buffer.star3_idx    = []
+    buffer.star3_id     = []
+    buffer.star3_ra     = []
+    buffer.star3_dec    = []
+    buffer.star3_pmra   = []
+    buffer.star3_pmdec  = []
+    buffer.star3_pmepoch= []
+    buffer.star3_mag    = []
+    buffer.radius       = []
+    buffer.area         = []
+    buffer.relarea      = []
+    buffer.separation   = []
+    buffer.relsep       = []
     return buffer
 
 def _increment_asterisms_buffer(buffer):
-    buffer.key       .append(np.zeros((buffer.max_size), dtype='<U20'   ))
-    buffer.ra        .append(np.zeros((buffer.max_size), dtype=np.float64))
-    buffer.dec       .append(np.zeros((buffer.max_size), dtype=np.float64))
-    buffer.num_stars .append(np.zeros((buffer.max_size), dtype=np.int_  ))
-    buffer.star1_idx .append(np.zeros((buffer.max_size), dtype=np.int_  ))
-    buffer.star1_id  .append(np.zeros((buffer.max_size), dtype=np.int_  ))
-    buffer.star1_ra  .append(np.zeros((buffer.max_size), dtype=np.float64))
-    buffer.star1_dec .append(np.zeros((buffer.max_size), dtype=np.float64))
-    buffer.star1_mag .append(np.zeros((buffer.max_size), dtype=np.float64))
-    buffer.star2_idx .append(np.zeros((buffer.max_size), dtype=np.int_  ))
-    buffer.star2_id  .append(np.zeros((buffer.max_size), dtype=np.int_  ))
-    buffer.star2_ra  .append(np.zeros((buffer.max_size), dtype=np.float64))
-    buffer.star2_dec .append(np.zeros((buffer.max_size), dtype=np.float64))
-    buffer.star2_mag .append(np.zeros((buffer.max_size), dtype=np.float64))
-    buffer.star3_idx .append(np.zeros((buffer.max_size), dtype=np.int_  ))
-    buffer.star3_id  .append(np.zeros((buffer.max_size), dtype=np.int_  ))
-    buffer.star3_ra  .append(np.zeros((buffer.max_size), dtype=np.float64))
-    buffer.star3_dec .append(np.zeros((buffer.max_size), dtype=np.float64))
-    buffer.star3_mag .append(np.zeros((buffer.max_size), dtype=np.float64))
-    buffer.radius    .append(np.zeros((buffer.max_size), dtype=np.float64))
-    buffer.area      .append(np.zeros((buffer.max_size), dtype=np.float64))
-    buffer.relarea   .append(np.zeros((buffer.max_size), dtype=np.float64))
-    buffer.separation.append(np.zeros((buffer.max_size), dtype=np.float64))
-    buffer.relsep    .append(np.zeros((buffer.max_size), dtype=np.float64))
+    buffer.key          .append(np.zeros((buffer.max_size), dtype='<U60'   ))
+    buffer.ra           .append(np.zeros((buffer.max_size), dtype=np.float64))
+    buffer.dec          .append(np.zeros((buffer.max_size), dtype=np.float64))
+    buffer.num_stars    .append(np.zeros((buffer.max_size), dtype=np.int_  ))
+    buffer.star1_idx    .append(np.zeros((buffer.max_size), dtype=np.int_  ))
+    buffer.star1_id     .append(np.zeros((buffer.max_size), dtype=np.int_  ))
+    buffer.star1_ra     .append(np.zeros((buffer.max_size), dtype=np.float64))
+    buffer.star1_dec    .append(np.zeros((buffer.max_size), dtype=np.float64))
+    buffer.star1_pmra   .append(np.zeros((buffer.max_size), dtype=np.float64))
+    buffer.star1_pmdec  .append(np.zeros((buffer.max_size), dtype=np.float64))
+    buffer.star1_pmepoch.append(np.zeros((buffer.max_size), dtype=np.float64))
+    buffer.star1_mag    .append(np.zeros((buffer.max_size), dtype=np.float64))
+    buffer.star2_idx    .append(np.zeros((buffer.max_size), dtype=np.int_  ))
+    buffer.star2_id     .append(np.zeros((buffer.max_size), dtype=np.int_  ))
+    buffer.star2_ra     .append(np.zeros((buffer.max_size), dtype=np.float64))
+    buffer.star2_dec    .append(np.zeros((buffer.max_size), dtype=np.float64))
+    buffer.star2_pmra   .append(np.zeros((buffer.max_size), dtype=np.float64))
+    buffer.star2_pmdec  .append(np.zeros((buffer.max_size), dtype=np.float64))
+    buffer.star2_pmepoch.append(np.zeros((buffer.max_size), dtype=np.float64))
+    buffer.star2_mag    .append(np.zeros((buffer.max_size), dtype=np.float64))
+    buffer.star3_idx    .append(np.zeros((buffer.max_size), dtype=np.int_  ))
+    buffer.star3_id     .append(np.zeros((buffer.max_size), dtype=np.int_  ))
+    buffer.star3_ra     .append(np.zeros((buffer.max_size), dtype=np.float64))
+    buffer.star3_dec    .append(np.zeros((buffer.max_size), dtype=np.float64))
+    buffer.star3_pmra   .append(np.zeros((buffer.max_size), dtype=np.float64))
+    buffer.star3_pmdec  .append(np.zeros((buffer.max_size), dtype=np.float64))
+    buffer.star3_pmepoch.append(np.zeros((buffer.max_size), dtype=np.float64))
+    buffer.star3_mag    .append(np.zeros((buffer.max_size), dtype=np.float64))
+    buffer.radius       .append(np.zeros((buffer.max_size), dtype=np.float64))
+    buffer.area         .append(np.zeros((buffer.max_size), dtype=np.float64))
+    buffer.relarea      .append(np.zeros((buffer.max_size), dtype=np.float64))
+    buffer.separation   .append(np.zeros((buffer.max_size), dtype=np.float64))
+    buffer.relsep       .append(np.zeros((buffer.max_size), dtype=np.float64))
     buffer.idx = -1
 
 def _merge_asterism_buffers(buffer):

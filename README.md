@@ -29,7 +29,7 @@ Ensure you have the following software installed:
 ```
 survey_tools/
 │
-├── aomap/                    # Map AO performance across celestial sphere
+├── aomap/                    # Map AO performance and find asterisms across celestial sphere
 ├── create/                   # Scripts for generating cross-matched catalogs
 ├── data/                     # Data used by some tools
 │   ├── catalogs/             # Third-party and cross-matched spectroscopic catalogs
