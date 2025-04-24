@@ -99,6 +99,9 @@ def read_config(config_or_filename):
         if config.max_data_level > config.inner_level:
             raise AOMapException('max_data_level must be less than or equal to inner_level')
 
+    if not hasattr(config, 'asterism_epoch'):
+        config.asterism_epoch = None
+
     if not hasattr(config, 'build_level'):
         config.build_level = None
 
@@ -195,13 +198,20 @@ def _get_data_filename(config, level):
 def _get_map_filename(config, key, level):
     return f"{config.folder}/{key}-hpx{level}.fits"
 
+def _get_hour_deg_for_path(outer_pix, coord):
+    hour = int(np.floor(coord.ra.degree/15))
+    deg = int(np.floor(np.abs(coord.dec.degree/10))*10)
+    return hour, deg
+
 def _get_outer_pixel_path(config, outer_pix):
     coord = healpix.get_pixel_skycoord(config.outer_level, outer_pix)
-    return f"{config.folder}/inner/hpx{config.outer_level}-{config.inner_level}/{int(coord.ra.degree/15)}h/{'+' if coord.dec.degree >= 0 else '-'}{int(np.abs(coord.dec.degree/10))*10:02}/{outer_pix}"
+    hour, deg = _get_hour_deg_for_path(outer_pix, coord)
+    return f"{config.folder}/inner/hpx{config.outer_level}-{config.inner_level}/{hour}h/{'+' if coord.dec.degree >= 0 else '-'}{deg:02}/{outer_pix}"
 
 def _get_gaia_path(config, outer_pix):
     coord = healpix.get_pixel_skycoord(config.outer_level, outer_pix)
-    return f"{config.folder}/gaia/hpx{config.outer_level}/{int(coord.ra.degree/15)}h/{'+' if coord.dec.degree >= 0 else '-'}{int(np.abs(coord.dec.degree/10))*10:02}/{outer_pix}"
+    hour, deg = _get_hour_deg_for_path(outer_pix, coord)
+    return f"{config.folder}/gaia/hpx{config.outer_level}/{hour}h/{'+' if coord.dec.degree >= 0 else '-'}{deg:02}/{outer_pix}"
 
 def _get_inner_pixel_data_filename(config, outer_pix):
     return f"{_get_outer_pixel_path(config, outer_pix)}/inner.fits"
@@ -219,7 +229,7 @@ def _get_asterisms_data_filename(config, outer_pix, ao_system_name):
 
 #region Build
 
-def build_inner(config_or_filename, mode='recalc', pixs=None, force_reload_gaia=False, max_ao_rank=None, max_pixels=None, verbose=False):
+def build_inner(config_or_filename, mode='recalc', pixs=None, force_reload_gaia=False, max_pixels=None, verbose=False):
     config = read_config(config_or_filename)
 
     if config.build_level is not None and config.build_level >= config.outer_level:
@@ -297,12 +307,12 @@ def build_inner(config_or_filename, mode='recalc', pixs=None, force_reload_gaia=
         if config.cores == 1:
             num_excluded = 0
             for outer_pix in todo_pix[start_idx:end_idx]:
-                results = _build_outer(config, mode, outer_pix, force_reload_gaia, max_ao_rank, verbose)
+                results = _build_outer(config, mode, outer_pix, force_reload_gaia, verbose)
                 done[outer_pix] = results[0]
                 excluded[outer_pix] = results[1]
                 num_excluded += results[1]
         else:
-            results = np.array(Parallel(n_jobs=config.cores)(delayed(_build_outer)(config, mode, outer_pix, force_reload_gaia, max_ao_rank, verbose) for outer_pix in todo_pix[start_idx:end_idx]))
+            results = np.array(Parallel(n_jobs=config.cores)(delayed(_build_outer)(config, mode, outer_pix, force_reload_gaia, verbose) for outer_pix in todo_pix[start_idx:end_idx]))
             done[todo_pix[start_idx:end_idx]]= results[:,0]
             excluded[todo_pix[start_idx:end_idx]] = results[:,1]
             num_excluded = np.sum(results[:,1])
@@ -736,13 +746,11 @@ def _get_outer_done(outer):
 def _get_outer_excluded(outer):
     return outer[1].data[FITS_COLUMN_EXCLUDED]
 
-def _build_outer(config, mode, outer_pix, force_reload_gaia, max_ao_rank, verbose=False):
+def _build_outer(config, mode, outer_pix, force_reload_gaia, verbose=False):
     [success, excluded] = _build_inner_data(config, mode, outer_pix, force_reload_gaia)
 
     if success and not excluded:
         for ao_system in config.ao_systems:
-            if max_ao_rank is not None and ao_system['rank'] > max_ao_rank:
-                continue
             [success, _] = _build_asterisms(config, mode, outer_pix, ao_system['name'], verbose=verbose)
             if not success:
                 break
@@ -974,7 +982,7 @@ def _create_asterisms(config, outer_pix, ao_system_name, verbose=False):
         _save_asterisms(config, outer_pix, ao_system_name, asterisms)
     return True
 
-def get_outer_stars(config, outer_pix, epoch=None, neighbour_level=None, required_band=None, use_cache=False):
+def get_stars_for_asterisms(config, outer_pix, neighbour_level=None, required_band=None, use_cache=False):
     gaia_data = _get_gaia_stars_in_outer_pixel(config, outer_pix, use_cache=use_cache)
 
     if neighbour_level is not None:
@@ -995,9 +1003,9 @@ def get_outer_stars(config, outer_pix, epoch=None, neighbour_level=None, require
 
         gaia_data = vstack(all_gaia_data)
 
-    if epoch is not None:
-        (gaia_data['gaia_ra'], gaia_data['gaia_dec']) = gaia.apply_proper_motion(gaia_data, epoch=epoch)
-        gaia_data.remove_column('gaia_ref_epoch')
+    if config.asterism_epoch is not None:
+        (gaia_data['gaia_ra'], gaia_data['gaia_dec']) = gaia.apply_proper_motion(gaia_data, epoch=config.asterism_epoch)
+        gaia_data['gaia_ref_epoch'] = config.asterism_epoch
 
     for colname in gaia_data.colnames:
         if colname.startswith('gaia_'):
@@ -1015,7 +1023,7 @@ def get_outer_stars(config, outer_pix, epoch=None, neighbour_level=None, require
 
     return gaia_data
 
-def find_outer_asterisms(config, outer_pix, ao_system_name, epoch=None, skip_overlaps=False, return_detail = False, use_cache=False, verbose=False):
+def find_outer_asterisms(config, outer_pix, ao_system_name, skip_overlaps=False, return_detail = False, use_cache=False, verbose=False):
     ao_system = get_ao_system(config, ao_system_name)
     band = ao_system['band']
     fov = ao_system['fov']
@@ -1025,7 +1033,7 @@ def find_outer_asterisms(config, outer_pix, ao_system_name, epoch=None, skip_ove
     fov_level = healpix.get_level_with_resolution(fov)
     fov_level_area = healpix.get_area(fov_level).to(u.arcmin**2).value
 
-    stars = get_outer_stars(config, outer_pix, epoch=epoch, neighbour_level=fov_level, required_band=band, use_cache=use_cache)
+    stars = get_stars_for_asterisms(config, outer_pix, neighbour_level=fov_level, required_band=band, use_cache=use_cache)
 
     # Filter NGS on Magnitude
     mag_filter = (stars[band] >= ao_system['min_mag']) & (stars[band] < ao_system['max_mag'])

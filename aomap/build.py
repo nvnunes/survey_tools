@@ -5,6 +5,7 @@
 # pylint: disable=invalid-name,too-many-arguments,too-many-locals,too-many-statements,too-many-branches
 
 import aomap
+import argparse
 
 ####################################################################################
 # Build Modes:
@@ -14,12 +15,16 @@ import aomap
 #     recalc : only recalculates outer pixel values using existing inner pixel data
 ####################################################################################
 
-mode = 'build' # build, rebuild, recalc
-verbose = False
-max_ao_rank = 3
+parser = argparse.ArgumentParser(description="Build AO map data.")
+parser.add_argument('mode', nargs='?', default='build', choices=['build', 'rebuild', 'recalc'], help="Build mode: 'build', 'rebuild', or 'recalc'. Default is 'build'.")
+parser.add_argument('--verbose', action='store_true', help="Enable verbose output.")
+
+args = parser.parse_args()
+mode = args.mode
+verbose = args.verbose
 
 config = aomap.read_config('config.yaml')
-aomap.build_inner(config, mode=mode, max_ao_rank=max_ao_rank, verbose=verbose)
+aomap.build_inner(config, mode=mode, verbose=verbose)
 aomap.append_asterism_dust(config, mode=mode, verbose=verbose)
 aomap.append_asterism_counts(config, mode=mode, verbose=verbose)
 aomap.build_data(config, mode=mode, verbose=verbose)
