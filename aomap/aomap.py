@@ -201,6 +201,10 @@ def _get_map_filename(config, key, level):
 def _get_hour_deg_for_path(outer_pix, coord):
     hour = int(np.floor(coord.ra.degree/15))
     deg = int(np.floor(np.abs(coord.dec.degree/10))*10)
+    # Hack: not clear why, but the following pixels end up in a different hour folder 
+    # during the build versus in export asterisms
+    if outer_pix in [8960, 8972, 9023, 9152, 9200, 9203, 9215, 11264, 11312, 11327, 11468]:
+        hour = 14
     return hour, deg
 
 def _get_outer_pixel_path(config, outer_pix):
