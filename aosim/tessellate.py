@@ -5,6 +5,7 @@
 # pylint: disable=invalid-name,too-many-arguments,too-many-locals,too-many-statements,too-many-branches
 
 from collections import namedtuple
+import astropy.units as u
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.spatial import Voronoi
@@ -68,8 +69,19 @@ def to_polar_coordinates(points):
     """
     Convert Cartesian coordinates to polar coordinates.
     """
-    r = np.linalg.norm(points, axis=1)
-    theta = (np.arctan2(points[:, 1], points[:, 0]) + 2*np.pi) % (2*np.pi)
+    if np.ndim(points) == 1:
+        r = np.linalg.norm(points)
+        theta = (np.arctan2(points[1], points[0]) + 2*np.pi) % (2*np.pi)
+        if np.isclose(r, 0):
+            r = 0.0
+            theta = 0.0
+    else:
+        r = np.linalg.norm(points, axis=1)
+        theta = (np.arctan2(points[:, 1], points[:, 0]) + 2*np.pi) % (2*np.pi)
+        close_to_zero = np.isclose(r, 0)
+        r[close_to_zero] = 0.0
+        theta[close_to_zero] = 0.0
+
     return r, theta
 
 def _sort_points(points, radius):
@@ -414,19 +426,31 @@ def generate_symmetric_polar_grid(n_rings, n_first_ring, r_min, r_max, delta_n=1
 
     return np.column_stack([x, y])
 
+def plot_polar_grid(r, theta, radius, title=None):
+    _, ax = plt.subplots(subplot_kw={'projection': 'polar'})
+    ax.scatter(theta, r, color='red')
+    ax.set_xlabel('Azimuth')
+    ax.set_ylabel('Zenith')
+    ax.set_rlim(0, radius)
+    if title is not None:
+        plt.title(title)
+    plt.grid(True)
+    plt.show()
+
 #endregion
 
 #region Asterisms
 
-Asterism = namedtuple("Triangle", ["r", "theta", "x", "y", "area", "scale", "score"], defaults=(None, None, None, None, None, None, None))
+Asterism = namedtuple('Asterism', ["r", "theta", "x", "y", "center_r", "center_theta", "area", "scale", "score"], defaults=(None, None, None, None, None, None, None, None, None))
 
 def create_asterism(r, theta):
     coords = polar_to_cartesian(r, theta)
     center_coords = get_triangle_incenter(coords)
+    center_coords_polar = to_polar_coordinates(center_coords)
     area = get_triangle_area(coords)
     mean_dist = get_triangle_mean_distance(coords, center_coords=center_coords)
     score = get_normalized_compactness_score(coords, mean_dist=mean_dist, area=area)
-    return Asterism(r=r, theta=theta, x=coords[0], y=coords[1], area=area, scale=2*mean_dist, score=score)
+    return Asterism(r=r, theta=theta, x=coords[0], y=coords[1], center_r=center_coords_polar[0], center_theta=center_coords_polar[1], area=area, scale=2*mean_dist, score=score)
 
 def polar_to_cartesian(r, theta):
     x = r * np.cos(theta)
@@ -621,6 +645,8 @@ def generate_asterisms(r, theta, max_incentre_distance=2.0, return_stats=False):
             continue
 
         if not is_incenter_within_radius(r[triplet], theta[triplet], max_incentre_distance):
+            # TODO: change to accept a larger radius (e.g. ring_width/2) but
+            # aftewards move asterisms so they are centered at the origin
             num_not_centered += 1
             continue
 
@@ -644,5 +670,53 @@ def generate_asterisms(r, theta, max_incentre_distance=2.0, return_stats=False):
         return asterisms, stats
     else:
         return asterisms
+
+#endregion
+
+#region Concentric Rings
+
+def compute_equal_area_radii(n, radius=1.0):
+    """
+    Computes the radii that divide a circle into n equal-area concentric regions.
+    """
+    if isinstance(radius, u.Quantity):
+        radius = radius.value
+    return [radius * np.sqrt(k / n) for k in range(n + 1)]
+
+def plot_concentric_rings(radii, points_r=None, points_theta=None):
+    theta = np.linspace(0, 2 * np.pi, 500)
+    fig, ax = plt.subplots(figsize=(6, 6))
+    n = len(radii) - 1
+
+    # Draw each region from outer to inner to ensure proper layering
+    for k in reversed(range(1, len(radii))):
+        r_outer = radii[k]
+        r_inner = radii[k - 1]
+        x_outer = r_outer * np.cos(theta)
+        y_outer = r_outer * np.sin(theta)
+        x_inner = r_inner * np.cos(theta)
+        y_inner = r_inner * np.sin(theta)
+
+        ax.fill(x_outer, y_outer, alpha=0.5, label=f'Region {k}')
+        ax.fill(x_inner, y_inner, color='white')
+
+        if r_inner > 0:
+            label_r = r_inner + 0.02 * (radii[-1])
+            ax.text(label_r, 0, f"{r_inner:.1f}", ha='center', va='center', fontsize=12, fontweight='bold')
+
+    # Plot points if provided
+    if points_r is not None and points_theta is not None:
+        x = points_r * np.cos(np.deg2rad(points_theta))
+        y = points_r * np.sin(np.deg2rad(points_theta))
+        ax.scatter(x, y, color='red', s=20)
+
+    # Style
+    R = radii[-1]
+    ax.set_aspect('equal')
+    ax.set_xlim(-R - 0.1, R + 0.1)
+    ax.set_ylim(-R - 0.1, R + 0.1)
+    ax.axis('off')
+    plt.title(f'Equal Area Rings', fontsize=14, fontweight='bold')
+    plt.show()
 
 #endregion
