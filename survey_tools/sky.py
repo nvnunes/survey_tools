@@ -12,6 +12,7 @@ from astropy.constants import si as constants
 from astropy.convolution import convolve, Gaussian1DKernel
 from astropy.io import ascii
 from astropy.table import Table
+import astropy.units as u
 from scipy.signal import find_peaks, peak_widths # pylint: disable=no-name-in-module
 
 class StructType:
@@ -117,8 +118,20 @@ def load_background_data(location, airmass, data_path = None):
     return background_data
 
 def get_vacuum_to_air_wavelength(wavelength):
+    if isinstance(wavelength, u.Quantity):
+        w = wavelength.to(u.angstrom).value
+        return_as_quantity = True
+    else:
+        w = wavelength
+        return_as_quantity = False
+
     # See: https://classic.sdss.org/dr7/products/spectra/vacwavelength.php
-    return wavelength / (1 + 2.735182e-4 + 1.314182e2 * np.power(wavelength,-2) + 2.76249e8 * np.power(wavelength,-4))
+    wavelength_atm = w / (1 + 2.735182e-4 + 1.314182e2 * np.power(w,-2) + 2.76249e8 * np.power(w,-4))
+
+    if return_as_quantity:
+        return (wavelength_atm * u.angstrom).to(wavelength.unit)
+    else:
+        return wavelength_atm
 
 def get_emission_line_rest_wavelengths(skip_close_doublets=False):
     lines = { # Angstrom
