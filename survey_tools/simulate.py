@@ -24,7 +24,7 @@ import numpy as np
 from scipy.interpolate import griddata, Rbf
 from tiptop import __version__ as __tiptop_version__
 from tiptop.tiptop import baseSimulation
-import stats
+from survey_tools import aostats
 
 rc("text", usetex=False)
 
@@ -221,12 +221,12 @@ def run_simulation(name, base_config_filename, wavelength, zenith_angle, seeing,
         psfs = np.array([img.sampling for img in simulation.results])
 
         if extra_vib is not None and extra_vib > 0:
-            stats.add_extra_vibrations(psfs, extra_vib, results['pixel_scale'])
+            aostats.add_extra_vibrations(psfs, extra_vib, results['pixel_scale'])
 
-        sr, fwhm, ee = stats.get_psf_stats(psfs, results['tel_diameter'], results['tel_pupil'], results['wavelength'], results['pixel_scale'], results['ee_size'])
+        sr, fwhm, ee = aostats.get_psf_stats(psfs, results['tel_diameter'], results['tel_pupil'], results['wavelength'], results['pixel_scale'], results['ee_size'])
 
         results.update({
-            'psfs': stats.cpuArray(psfs),
+            'psfs': aostats.cpuArray(psfs),
             'sr': sr,
             'fwhm': fwhm,
             'ee': ee,
@@ -386,6 +386,12 @@ def get_sim_is_run(output_path, name, num_sims):
     else:
         return np.full((num_sims), os.path.isfile(output_file))
 
+class ModuleRemappingUnpickler(pickle.Unpickler):
+    def find_class(self, module, name):
+        if module == "simulate" or name == "SimulationErrors":
+            return SimulationErrors
+        return super().find_class(module, name)
+
 def load_single_asterism(output_path_or_file_path, name=None, asterism_id=None):
     if os.path.isfile(output_path_or_file_path):
         output_file = output_path_or_file_path
@@ -401,7 +407,7 @@ def load_single_asterism(output_path_or_file_path, name=None, asterism_id=None):
         raise SimulateException(f"File {output_file} does not exist")
 
     with open(output_file, 'rb') as f:
-        results = pickle.load(f)
+        results = ModuleRemappingUnpickler(f).load()
 
     results['name'] = name
 
@@ -447,7 +453,7 @@ def load_asterism_stats(output_path, name):
     data_file = f"{output_path}/h5/{name}_data.h5"
 
     with open(output_file, 'rb') as f:
-        results = pickle.load(f)
+        results = ModuleRemappingUnpickler(f).load()
 
     results['name'] = name
 
@@ -602,7 +608,7 @@ def load_matlab_results(output_path_or_file_path, name=None, recompute=False, ex
         psfs = rearrange_matlab_psfs(matlab_results['psfs'])
 
         if extra_vib is not None and extra_vib > 0:
-            stats.add_extra_vibrations(psfs, extra_vib, pixel_scale)
+            aostats.add_extra_vibrations(psfs, extra_vib, pixel_scale)
 
         tel_diameter = matlab_results['parm']['tel']['Dsupp']
         pupil_file = os.path.join(output_path, 'pupil.mat')
@@ -611,7 +617,7 @@ def load_matlab_results(output_path_or_file_path, name=None, recompute=False, ex
         else:
             raise SimulateException(f"File pupil file is missing: {pupil_file}")
 
-        sr, fwhm, ee = stats.get_stats_matlab(psfs, tel_diameter, tel_pupil, wavelength, pixel_scale, ee_size)
+        sr, fwhm, ee = aostats.get_stats_matlab(psfs, tel_diameter, tel_pupil, wavelength, pixel_scale, ee_size)
     else:
         if max_phase_screens is not None:
             sr = matlab_results['cumSR'][:,max_phase_screens]
