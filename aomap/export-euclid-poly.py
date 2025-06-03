@@ -32,6 +32,59 @@ for poly, border_coords in enumerate(moc_boundaries):
 np.savetxt('../data/surveys/ews-poly.txt', ews_boundaries, delimiter=' ', fmt=['%3.6f','%3.6f','%5d'])
 
 ####################################################################################################
+# EWS by Year
+####################################################################################################
+
+num_years = 6
+last_moc = None
+for k in range(1, num_years+1):
+    filename = f"../data//euclid/rsd2024a-footprint-equ-13-year{k}-MOC.fits"
+    moc = MOC.from_fits(filename)
+
+    if last_moc is not None:
+        moc_year = moc.difference(last_moc)
+    else:
+        moc_year = moc
+
+    level = 9
+    moc_year = moc_year.degrade_to_order(level)
+    moc_boundaries = moc_year.get_boundaries()
+
+    ews_boundaries = Table(names=['ra', 'dec', 'poly'], dtype=[np.float64, np.float64, np.int_])
+    for poly, border_coords in enumerate(moc_boundaries):
+        for i in range(len(border_coords.ra)):
+            ews_boundaries.add_row([border_coords[i].ra.to(u.deg).value, border_coords[i].dec.to(u.deg).value, poly+1])
+
+    np.savetxt(f"../data/surveys/ews-year{k}-poly.txt", ews_boundaries, delimiter=' ', fmt=['%3.6f','%3.6f','%5d'])
+
+    last_moc = moc
+
+####################################################################################################
+# EWS up to Year
+####################################################################################################
+
+num_years = 6
+mocs = []
+for k in range(1, num_years+1):
+    filename = f"../data//euclid/rsd2024a-footprint-equ-13-year{k}-MOC.fits"
+    mocs.append(MOC.from_fits(filename))
+    if k > 1:
+        moc = mocs[0].union(*mocs[1:])
+    else:
+        moc = mocs[0]
+
+    level = 9
+    moc = moc.degrade_to_order(level)
+    moc_boundaries = moc.get_boundaries()
+
+    ews_boundaries = Table(names=['ra', 'dec', 'poly'], dtype=[np.float64, np.float64, np.int_])
+    for poly, border_coords in enumerate(moc_boundaries):
+        for i in range(len(border_coords.ra)):
+            ews_boundaries.add_row([border_coords[i].ra.to(u.deg).value, border_coords[i].dec.to(u.deg).value, poly+1])
+
+    np.savetxt(f"../data/surveys/ews-year1-{k}-poly.txt", ews_boundaries, delimiter=' ', fmt=['%3.6f','%3.6f','%5d'])
+
+####################################################################################################
 # EDF
 ####################################################################################################
 
