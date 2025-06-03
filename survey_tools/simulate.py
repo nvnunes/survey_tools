@@ -151,7 +151,7 @@ def _create_config(base_config_filename, config_path, wavelength, zenith_angle, 
     if opt_zd is not None and opt_az is not None:
         config['DM']['OptimizationZenith'] = '[' + ','.join(f"{n:.4f}" for n in opt_zd) + ']'
         config['DM']['OptimizationAzimuth'] = '[' + ','.join(f"{n:.4f}" for n in opt_az) + ']'
-        config['DM']['OptimizationWeight'] = '[' + ','.join(f"{n:.1f}" for n in np.ones(len(opt_zd))) + ']'
+        config['DM']['OptimizationWeight'] = '[' + ','.join(f"{1.0/len(opt_zd):.4f}" for _ in range(len(opt_zd))) + ']'
 
     if remove_moao:
         for section in list(config.sections()):
