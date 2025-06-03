@@ -410,6 +410,11 @@ def load_single_asterism(output_path_or_file_path, name=None, asterism_id=None):
         results = ModuleRemappingUnpickler(f).load()
 
     results['name'] = name
+    results['theta'][np.isclose(results['theta'], 360.0, atol=2e-4)] = 0.0
+    results['x'] = results['r'] * np.cos(np.deg2rad(results['theta']))
+    results['y'] = results['r'] * np.sin(np.deg2rad(results['theta']))
+    results['x'][np.isclose(results['x'], 0, atol=2e-4)] = 0.0
+    results['y'][np.isclose(results['y'], 0, atol=2e-4)] = 0.0
 
     if 'mode' not in results:
         if 'moao' in name.lower():
@@ -524,11 +529,11 @@ def rearrange_matlab_psfs(psfs):
 
     return new_psfs
 
-def load_matlab_results(output_path_or_file_path, name=None, recompute=False, extra_vib=None, max_phase_screens=None, ee_size=None):
+def load_matlab_results(output_path_or_file_path, name=None, recompute=False, extra_vib=None, sort_r=None, sort_theta=None, max_phase_screens=None, ee_size=None, return_psfs=False):
     if max_phase_screens is not None and recompute:
         raise SimulateException("max_phase_screens and recompute=True cannot be used together")
 
-    if extra_vib is not None and extra_vib > 0 and not recompute:
+    if extra_vib is not None and not recompute:
         raise SimulateException("extra_vib requires recompute=True")
 
     if os.path.isfile(output_path_or_file_path):
@@ -586,8 +591,14 @@ def load_matlab_results(output_path_or_file_path, name=None, recompute=False, ex
 
     r = matlab_results['parm']['sci']['RHO'].flatten()
     theta = np.rad2deg(matlab_results['parm']['sci']['TH'].flatten())
+    theta[np.isclose(theta, 360.0, atol=2e-4)] = 0.0
+    x = r * np.cos(np.deg2rad(theta))
+    y = r * np.sin(np.deg2rad(theta))
+    x[np.isclose(x, 0, atol=2e-4)] = 0.0
+    y[np.isclose(y, 0, atol=2e-4)] = 0.0
 
     results = {
+        'name': name,
         'mode': mode,
         'pixel_scale': pixel_scale,
         'wavelength': wavelength,
@@ -601,13 +612,37 @@ def load_matlab_results(output_path_or_file_path, name=None, recompute=False, ex
         'LGS_mag': lgs_mag,
         'ee_size': ee_size,
         'r': r,
-        'theta': theta
+        'theta': theta,
+        'x': x,
+        'y': y
     }
+
+    sort_indices = []
+    if sort_r is not None or sort_theta is not None:
+        if sort_r is None or sort_theta is None:
+            raise SimulateException("sort_r and sort_theta must be provided together")
+        if sort_r.shape != r.shape or sort_theta.shape != theta.shape:
+            raise SimulateException("sort_r and sort_theta must have the same shape as r and theta")
+        
+        for sr, st in zip(sort_r, sort_theta):
+            if np.isclose(st, 360.0, atol=2e-4):
+                st = 0.0
+            idx = np.where((np.isclose(r, sr, atol=2e-4)) & (np.isclose(theta, st, atol=2e-4)))[0]
+            if len(idx) == 0:
+                raise SimulateException(f"Could not match (r, theta)=({sr}, {st}) in MATLAB results")
+            sort_indices.append(idx[0])
+        sort_indices = np.array(sort_indices)
+        r = r[sort_indices]
+        theta = theta[sort_indices]
+        x = x[sort_indices]
+        y = y[sort_indices]
 
     if recompute:
         psfs = rearrange_matlab_psfs(matlab_results['psfs'])
+        if len(sort_indices) > 0:
+            psfs = psfs[sort_indices]
 
-        if extra_vib is not None and extra_vib > 0:
+        if extra_vib is not None:
             aostats.add_extra_vibrations(psfs, extra_vib, pixel_scale)
 
         tel_diameter = matlab_results['parm']['tel']['Dsupp']
@@ -628,11 +663,19 @@ def load_matlab_results(output_path_or_file_path, name=None, recompute=False, ex
             fwhm = matlab_results['fwhm'] * 1000.0
             ee = matlab_results['ee01']
 
+        if len(sort_indices) > 0:
+            sr = sr[sort_indices]
+            fwhm = fwhm[sort_indices]
+            ee = ee[sort_indices]
+
     results.update({
         'sr': sr,
         'fwhm': fwhm,
         'ee': ee
     })
+
+    if return_psfs:
+        results['psfs'] = psfs
 
     return results
 
@@ -651,7 +694,25 @@ def find_asterism(results, mag=None, zd=None, az=None):
         raise SimulateException(f"Asterism not found")
     return asterism_id
 
-def compute_difference(results1, results2, relative=False):
+def compute_difference(results1, results2, relative=False, absolute_value=False, skip_sort=False):
+    if results1['r'].shape != results2['r'].shape or results1['theta'].shape != results2['theta'].shape:
+        raise SimulateException("results must have the same shape as r and theta")
+
+    if not skip_sort:
+        results2 = deepcopy(results2)
+        sort_indices = []
+        for sr, st in zip(results1['r'], results1['theta']):
+            idx = np.where((np.isclose(results2['r'], sr, atol=2e-4)) & (np.isclose(results2['theta'], st, atol=2e-4)))[0]
+            if len(idx) == 0:
+                raise SimulateException(f"Could not match (r, theta)=({sr}, {st}) results2")
+            sort_indices.append(idx[0])
+        sort_indices = np.array(sort_indices)
+        results2['r'] = results2['r'][sort_indices]
+        results2['theta'] = results2['theta'][sort_indices]
+        results2['sr'] = results2['sr'][sort_indices]
+        results2['ee'] = results2['ee'][sort_indices]
+        results2['fwhm'] = results2['fwhm'][sort_indices]
+    
     results3 = deepcopy(results1)
     results3['sr'] = results2['sr']-results1['sr']
     results3['fwhm'] = results2['fwhm']-results1['fwhm']
@@ -662,6 +723,11 @@ def compute_difference(results1, results2, relative=False):
         results3['fwhm'] = results3['fwhm'] / results1['fwhm']
         results3['ee'] = results3['ee'] / results1['ee']
 
+    if absolute_value:
+        results3['sr'] = np.abs(results3['sr'])
+        results3['fwhm'] = np.abs(results3['fwhm'])
+        results3['ee'] = np.abs(results3['ee'])
+
     return results3
 
 def format_contour_label(x):
@@ -670,28 +736,28 @@ def format_contour_label(x):
         s = f"{x:.1f}"
     return rf"{s}" if plt.rcParams["text.usetex"] else f"{s}"
 
-def get_plot_range(mode, plot_value, plot_range=None, fixed_range=False, contours=None, compare_contours=None):
+def get_plot_range(name, mode, plot_value, plot_range=None, fixed_range=False, contours=None, compare_contours=None):
     if plot_range is not None:
         fixed_range = True
         compare_range = plot_range
     elif fixed_range:
         match plot_value:
             case 'SR':
-                if mode == 'LTAO':
+                if mode == 'LTAO' or 'tiled' in name.lower():
                     vmin = 0.10
                     vmax = 0.50
                 else:
                     vmin = 0.00
                     vmax = 0.40
             case 'FWHM':
-                if mode == 'LTAO':
+                if mode == 'LTAO' or 'tiled' in name.lower():
                     vmin = 60.0
                     vmax = 80.0
                 else:
                     vmin = 60.0
                     vmax = 120.0
             case 'EE':
-                if mode == 'LTAO':
+                if mode == 'LTAO' or 'tiled' in name.lower():
                     vmin = 0.20
                     vmax = 0.60
                 else:
@@ -710,17 +776,17 @@ def get_plot_range(mode, plot_value, plot_range=None, fixed_range=False, contour
     if contours is None:
         match plot_value:
             case 'SR':
-                if mode == 'LTAO':
+                if mode == 'LTAO' or 'tiled' in name.lower():
                     contours = np.arange(0.10, 0.50, 0.02)
                 else:
                     contours = np.arange(0.05, 0.50, 0.05)
             case 'FWHM':
-                if mode == 'LTAO':
+                if mode == 'LTAO' or 'tiled' in name.lower():
                     contours = np.arange(50, 80, 1)
                 else:
                     contours = np.arange(50, 140, 5)
             case 'EE':
-                if mode == 'LTAO':
+                if mode == 'LTAO' or 'tiled' in name.lower():
                     contours = np.arange(0.10, 1.0, 0.05)
                 else:
                     contours = np.arange(0.05, 1.0, 0.05)
@@ -740,11 +806,11 @@ def get_plot_range(mode, plot_value, plot_range=None, fixed_range=False, contour
 
     return plot_range, compare_range, fixed_range, contours, compare_contours
 
-def plot_fov(all_results, asterism_id=1, labels=None, plot_value='SR', is_percent=False, contours=None, skip_smoothing=False, skip_contours=False, fixed_range=False, plot_range=None, mark_points=None, plot_mags=False, plot_points=False):
+def plot_fov(all_results, asterism_id=1, labels=None, plot_value='SR', plot_fov=None, is_percent=False, contours=None, skip_smoothing=False, skip_contours=False, fixed_range=False, plot_range=None, mark_points=None, plot_mags=False, plot_points=False):
     if not isinstance(all_results, list):
         all_results = [all_results]
 
-    plot_range, _, fixed_range, contours, _ = get_plot_range(all_results[0]['mode'], plot_value, plot_range, fixed_range, contours)
+    plot_range, _, fixed_range, contours, _ = get_plot_range(all_results[0]['name'], all_results[0]['mode'], plot_value, plot_range, fixed_range, contours)
 
     if len(all_results) > 1:
         width_ratios = [1.0] * len(all_results) + ([0.1] if fixed_range else [])
@@ -759,7 +825,7 @@ def plot_fov(all_results, asterism_id=1, labels=None, plot_value='SR', is_percen
         if len(all_results) > 1:
             ax = fig.add_subplot(gs[i])
         
-        im = plot_results(ax, results, asterism_id=asterism_id, label=labels[i] if labels is not None else None, plot_value=plot_value, is_percent=is_percent, contours=contours, skip_smoothing=skip_smoothing, skip_contours=skip_contours, plot_range=plot_range, mark_points=mark_points, plot_mags=plot_mags, plot_points=plot_points)
+        im = plot_results(ax, results, asterism_id=asterism_id, label=labels[i] if labels is not None else None, plot_value=plot_value, plot_fov=plot_fov, is_percent=is_percent, contours=contours, skip_smoothing=skip_smoothing, skip_contours=skip_contours, plot_range=plot_range, mark_points=mark_points, plot_mags=plot_mags, plot_points=plot_points)
 
         if len(all_results) == 1 or not fixed_range or i+1 == len(all_results):
             if fixed_range and len(all_results) > 1:
@@ -769,11 +835,18 @@ def plot_fov(all_results, asterism_id=1, labels=None, plot_value='SR', is_percen
 
     plt.show()
 
-def plot_compare_fov(results1, results2, asterism_id=1, labels=None, plot_value='SR', plot_range=None, contours=None, compare_contours=None, skip_smoothing=False, skip_contours=False, show_absolute_diff=False, mark_points=None, plot_mags=False, plot_points=False):
-    plot_range, compare_range, _, contours, compare_contours = get_plot_range(results1['mode'], plot_value, plot_range, True, contours, compare_contours)
+def plot_compare_fov(results1, results2, asterism_id=1, labels=None, plot_value='SR', plot_fov=None, compare_absolute=False, requirement=None, plot_range=None, contours=None, compare_contours=None, skip_smoothing=False, skip_contours=False, mark_points=None, plot_mags=False, plot_points=False):
+    plot_range, compare_range, _, contours, compare_contours = get_plot_range(results1['name'], results1['mode'], plot_value, plot_range, True, contours, compare_contours)
 
-    results3 = compute_difference(results1, results2, relative=not show_absolute_diff)
-    
+    results3 = compute_difference(results1, results2, relative=not compare_absolute, absolute_value=requirement is not None)
+    if requirement is not None:
+        compare_range[0] = 0.0
+
+        if plot_value == 'FWHM':
+            compare_contours = [requirement, 1000.0 if compare_absolute else 100.0]
+        else:
+            compare_contours = [requirement, 1.0 if compare_absolute else 100.0]
+
     width_ratios = [1, 1, 0.1, 1, 0.1]
     fig = plt.figure(figsize=(15+1.0, 5))
     gs = GridSpec(1, 5, width_ratios=width_ratios, wspace=0.3)
@@ -781,20 +854,28 @@ def plot_compare_fov(results1, results2, asterism_id=1, labels=None, plot_value=
     plt.rcParams.update({'font.family': 'Arial', 'font.size': 9})
 
     ax = fig.add_subplot(gs[0])
-    im = plot_results(ax, results1, plot_range, asterism_id=asterism_id, label=labels[0] if labels is not None else None, plot_value=plot_value, contours=contours, skip_smoothing=skip_smoothing, skip_contours=skip_contours, mark_points=mark_points, plot_mags=plot_mags, plot_points=plot_points)
+    im = plot_results(ax, results1, plot_range, asterism_id=asterism_id, label=labels[0] if labels is not None else None, plot_value=plot_value, plot_fov=plot_fov, contours=contours, skip_smoothing=skip_smoothing, skip_contours=skip_contours, mark_points=mark_points, plot_mags=plot_mags, plot_points=plot_points)
     ax = fig.add_subplot(gs[1])
-    im = plot_results(ax, results2, plot_range, asterism_id=asterism_id, label=labels[1] if labels is not None else None, plot_value=plot_value, contours=contours, skip_smoothing=skip_smoothing, skip_contours=skip_contours, mark_points=mark_points, plot_mags=plot_mags, plot_points=plot_points)
+    im = plot_results(ax, results2, plot_range, asterism_id=asterism_id, label=labels[1] if labels is not None else None, plot_value=plot_value, plot_fov=plot_fov, contours=contours, skip_smoothing=skip_smoothing, skip_contours=skip_contours, mark_points=mark_points, plot_mags=plot_mags, plot_points=plot_points)
     plot_cbar(fig, im, plot_value, results1, gs=gs[2])
     ax = fig.add_subplot(gs[3])
-    im = plot_results(ax, results3, compare_range, asterism_id=asterism_id, label='Diff' if labels is not None else None, plot_value=plot_value, is_percent=not show_absolute_diff, contours=compare_contours, skip_smoothing=skip_smoothing, skip_contours=skip_contours, mark_points=mark_points, plot_mags=plot_mags, plot_points=plot_points)
-    plot_cbar(fig, im, plot_value, results3, is_percent=not show_absolute_diff, gs=gs[4])
+    im, values = plot_results(ax, results3, compare_range, asterism_id=asterism_id, label='Diff' if labels is not None else None, plot_value=plot_value, plot_fov=plot_fov, is_percent=not compare_absolute, contours=compare_contours, skip_smoothing=skip_smoothing, skip_contours=skip_contours, mark_points=mark_points, plot_mags=plot_mags, plot_points=plot_points, return_values=True)
+    if requirement is not None:
+        if not compare_absolute or plot_value == 'FWHM':
+            requirement_fraction = np.sum(values <= requirement) / np.size(values)
+        else:
+            requirement_fraction = np.sum(values >= requirement) / np.size(values)
+
+        ax.text(0.5, 0.5, f"{requirement_fraction:.1%}", transform=ax.transAxes, fontsize=10, ha='center', va='center', bbox=dict(facecolor='white', alpha=0.8, edgecolor='none'))
+
+    plot_cbar(fig, im, plot_value, results3, is_percent=not compare_absolute, gs=gs[4])
     plt.show()
 
-def plot_requirement_fov(all_results, plot_value, requirement, asterism_id=1, labels=None, plot_range=None, mark_points=None, plot_mags=False, plot_points=False):
+def plot_requirement_fov(all_results, plot_value, requirement, asterism_id=1, labels=None, plot_fov=None, plot_range=None, mark_points=None, plot_mags=False, plot_points=False):
     if not isinstance(all_results, list):
         all_results = [all_results]
 
-    plot_range, _, _, _, _ = get_plot_range(all_results[0]['mode'], plot_value, plot_range, True)
+    plot_range, _, _, _, _ = get_plot_range(all_results[0]['name'], all_results[0]['mode'], plot_value, plot_range, True)
     if plot_value == 'FWHM':
         contours = [requirement, 1000.0]
     else:
@@ -813,7 +894,7 @@ def plot_requirement_fov(all_results, plot_value, requirement, asterism_id=1, la
         if len(all_results) > 1:
             ax = fig.add_subplot(gs[i])
         
-        im, values = plot_results(ax, results, asterism_id=asterism_id, label=labels[i] if labels is not None else None, plot_value=plot_value, contours=contours, plot_range=plot_range, mark_points=mark_points, plot_mags=plot_mags, plot_points=plot_points, return_values=True)
+        im, values = plot_results(ax, results, asterism_id=asterism_id, label=labels[i] if labels is not None else None, plot_value=plot_value, plot_fov=plot_fov, contours=contours, plot_range=plot_range, mark_points=mark_points, plot_mags=plot_mags, plot_points=plot_points, return_values=True)
 
         if plot_value == 'FWHM':
             requirement_fraction = np.sum(values <= requirement) / np.size(values)
@@ -836,25 +917,29 @@ def get_star_size(mag, default_size=100):
     else:
         return 300 - max(0,50*(mag-15))
 
-def plot_results(ax, results, plot_range, asterism_id=1, label=None, plot_value='SR', is_percent=False, contours=None, skip_smoothing=False, skip_contours=False, mark_points=None, plot_mags=False, plot_points=False, return_values=False):
+def plot_results(ax, results, plot_range, asterism_id=1, label=None, plot_value='SR', plot_fov=None, is_percent=False, contours=None, skip_smoothing=False, skip_contours=False, mark_points=None, plot_mags=False, plot_points=False, return_values=False):
     asterism_idx = asterism_id - 1
     N = len(results['r'])
 
     x = np.round(results['r'] * np.cos(np.deg2rad(results['theta'])), 4)
     y = np.round(results['r'] * np.sin(np.deg2rad(results['theta'])), 4)
 
-    if results['mode'] == 'LTAO':
+    if plot_fov is not None:
+        side = plot_fov
+    elif results['mode'] == 'LTAO':
         side = 20.0
+    else:
+        side = 120.0
+
+    if results['mode'] == 'LTAO' or 'tiled' in results['name'].lower():
         Nside = int(np.sqrt(N))
         if np.mod(Nside,2) == 0:
             x -= side/Nside/2
             y -= side/Nside/2
-    else:
-        side = 120.0
 
     radius= side/2
 
-    if results['mode'] == 'LTAO':
+    if results['mode'] == 'LTAO' or 'tiled' in results['name'].lower():
         if np.mod(Nside,2) == 0:
             limits = [-8, 8]
         else:
@@ -865,7 +950,7 @@ def plot_results(ax, results, plot_range, asterism_id=1, label=None, plot_value=
     else:
         limits = [-radius, radius]
 
-    if results['mode'] == 'LTAO':
+    if results['mode'] == 'LTAO' or 'tiled' in results['name'].lower():
         mask = (np.abs(x) <= radius) & (np.abs(y) <= radius)
     else:
         mask = results['r'] <= radius
@@ -892,12 +977,12 @@ def plot_results(ax, results, plot_range, asterism_id=1, label=None, plot_value=
     if skip_smoothing:
         VALUES = griddata((x, y), values, (X, Y), method='nearest')
     else:
-        if results['mode'] == 'LTAO':
+        if results['mode'] == 'LTAO' or 'tiled' in results['name'].lower():
             VALUES = griddata((x, y), values, (X, Y), method='cubic')
         else:
             VALUES = Rbf(x, y, values, function='cubic')(X, Y)
     MASK = np.ones(VALUES.shape, dtype=np.float64)
-    if results['mode'] == 'LTAO':
+    if results['mode'] == 'LTAO' or 'tiled' in results['name'].lower():
         MASK[(np.abs(X) > limits[1]) | (np.abs(Y) > limits[1])] = np.nan
     else:
         MASK[np.sqrt(X**2 + Y**2) > limits[1]] = np.nan
@@ -938,7 +1023,7 @@ def plot_results(ax, results, plot_range, asterism_id=1, label=None, plot_value=
         ax.set_title(f"{title} Mean={values_mean:.2f}, Std={values_std:.2f}, PV={values_pv:.2f}", fontweight='bold')
 
     # Plot the circle boundary
-    if results['mode'] != 'LTAO':
+    if results['mode'] != 'LTAO' and 'tiled' not in results['name'].lower():
         circle = plt.Circle((0, 0), radius, fill=False, color='black', linewidth=4)
         ax.add_patch(circle)
 
@@ -1330,6 +1415,8 @@ def export_compare_fov(results1, results2, labels=None, filename=None):
     table = Table({
         'r': results1['r'],
         'theta': results1['theta'],
+        'x': results1['x'],
+        'y': results1['y'],
         f'sr_{labels[0]}': results1['sr'],
         f'sr_{labels[1]}': results2['sr'],
         f'ee_{labels[0]}': results1['ee'],

@@ -195,4 +195,7 @@ def _get_ensquared_energy(psfs, assume_centered=False):
 def add_extra_vibrations(psfs, sigma, pixel_scale):
     sigma_pix = sigma / pixel_scale
     for i in range(len(psfs)):
-        psfs[i,:,:] = scnd.gaussian_filter(psfs[i,:,:], sigma=sigma_pix)
+        if nnp.isscalar(sigma_pix):
+            psfs[i,:,:] = scnd.gaussian_filter(psfs[i,:,:], sigma=sigma_pix)
+        else:
+            psfs[i,:,:] = scnd.gaussian_filter(psfs[i,:,:], sigma=sigma_pix[i])
