@@ -653,6 +653,8 @@ def load_matlab_results(output_path_or_file_path, name=None, recompute=False, ex
             raise SimulateException(f"File pupil file is missing: {pupil_file}")
 
         sr, fwhm, ee = aostats.get_stats_matlab(psfs, tel_diameter, tel_pupil, wavelength, pixel_scale, ee_size)
+
+        results['psfs'] = psfs
     else:
         if max_phase_screens is not None:
             sr = matlab_results['cumSR'][:,max_phase_screens]
@@ -736,10 +738,11 @@ def format_contour_label(x):
         s = f"{x:.1f}"
     return rf"{s}" if plt.rcParams["text.usetex"] else f"{s}"
 
-def get_plot_range(name, mode, plot_value, plot_range=None, fixed_range=False, contours=None, compare_contours=None):
+def get_plot_range(name, mode, plot_value, plot_range=None, fixed_range=False, contours=None, compare_contours=None, compare_range=None):
     if plot_range is not None:
         fixed_range = True
-        compare_range = plot_range
+        if compare_range is None:
+            compare_range = plot_range
     elif fixed_range:
         match plot_value:
             case 'SR':
@@ -769,9 +772,14 @@ def get_plot_range(name, mode, plot_value, plot_range=None, fixed_range=False, c
 
         plot_range = [vmin, vmax]
 
-    compare_vmin = -40.0
-    compare_vmax = 40.0
-    compare_range = [compare_vmin, compare_vmax]
+    if compare_range is not None:
+        compare_range = compare_range
+        compare_vmin = compare_range[0]
+        compare_vmax = compare_range[1]
+    else:
+        compare_vmin = -40.0
+        compare_vmax = 40.0
+        compare_range = [compare_vmin, compare_vmax]
 
     if contours is None:
         match plot_value:
@@ -835,8 +843,8 @@ def plot_fov(all_results, asterism_id=1, labels=None, plot_value='SR', plot_fov=
 
     plt.show()
 
-def plot_compare_fov(results1, results2, asterism_id=1, labels=None, plot_value='SR', plot_fov=None, compare_absolute=False, requirement=None, plot_range=None, contours=None, compare_contours=None, skip_smoothing=False, skip_contours=False, mark_points=None, plot_mags=False, plot_points=False):
-    plot_range, compare_range, _, contours, compare_contours = get_plot_range(results1['name'], results1['mode'], plot_value, plot_range, True, contours, compare_contours)
+def plot_compare_fov(results1, results2, asterism_id=1, labels=None, plot_value='SR', plot_fov=None, compare_absolute=False, requirement=None, plot_range=None, contours=None, compare_contours=None, compare_range=None, skip_smoothing=False, skip_contours=False, mark_points=None, plot_mags=False, plot_points=False):
+    plot_range, compare_range, _, contours, compare_contours = get_plot_range(results1['name'], results1['mode'], plot_value, plot_range, True, contours, compare_contours, compare_range)
 
     results3 = compute_difference(results1, results2, relative=not compare_absolute, absolute_value=requirement is not None)
     if requirement is not None:
@@ -1124,7 +1132,7 @@ def plot_cbar(fig, im, plot_value, results, is_percent=False, gs=None):
 
     cbar.ax.set_ylabel(bkg_label)
 
-def plot_psf(results, index=0, zoom=None, skip_peak_norm=False, skip_cbar=False, fixed_range=False):
+def plot_psf(results, index=0, zoom=None, title_prefix=None, skip_peak_norm=False, skip_cbar=False, fixed_range=False):
 
     # TODO: option to zoom in to 1.5 * FWHM
     # TODO: option to plot EE box
@@ -1177,7 +1185,7 @@ def plot_psf(results, index=0, zoom=None, skip_peak_norm=False, skip_cbar=False,
         cbar.set_label(f"Log {'Relative ' if not skip_peak_norm else ''}Intensity")
     ax.set_xlabel('[mas/Sky]')
     ax.set_ylabel('[mas/Sky]')
-    plt.title(f"Center: r={results['r'][index]:.1f}\", theta={results['theta'][index]:.1f}°\nSR={results['sr'][index]:.2f}, FWHM={results['fwhm'][index]:.0f} mas, EE{results['ee_size'].value:.0f}={results['ee'][index]:.2f}")
+    plt.title(f"{title_prefix + " " if title_prefix is not None else ""}Center: r={results['r'][index]:.1f}\", theta={results['theta'][index]:.1f}°\nSR={results['sr'][index]:.2f}, FWHM={results['fwhm'][index]:.0f} mas, EE{results['ee_size'].value:.0f}={results['ee'][index]:.2f}")
     plt.show()
 
 def plot_asterism_stats(all_results, labels, plot_value='SR', plot_x='scale', point_filter=None, plot_range=None, plot_asterism_codes=False, hide_title=False):
