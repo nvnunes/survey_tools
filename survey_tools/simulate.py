@@ -529,31 +529,31 @@ def rearrange_matlab_psfs(psfs):
 
     return new_psfs
 
-def load_matlab_results(output_path_or_file_path, name=None, recompute=False, extra_vib=None, sort_r=None, sort_theta=None, max_phase_screens=None, ee_size=None, return_psfs=False):
-    if max_phase_screens is not None and recompute:
-        raise SimulateException("max_phase_screens and recompute=True cannot be used together")
+def load_matlab_results(output_path_or_file_path, name=None, use_matlab_stats=False, extra_vib=None, sort_r=None, sort_theta=None, max_phase_screens=None, ee_size=None, return_psfs=False):
+    if max_phase_screens is not None and not use_matlab_stats:
+        raise SimulateException("max_phase_screens requires use_matlab_stats=True")
 
-    if extra_vib is not None and not recompute:
-        raise SimulateException("extra_vib requires recompute=True")
+    if extra_vib is not None and use_matlab_stats:
+        raise SimulateException("extra_vib cannot be used with use_matlab_stats=True")
 
     if os.path.isfile(output_path_or_file_path):
-        output_file = output_path_or_file_path
-        output_path = os.path.dirname(output_file)
-        name = os.path.splitext(os.path.basename(output_file))[0]
+        matlab_file = output_path_or_file_path
+        output_path = os.path.dirname(matlab_file)
+        name = os.path.splitext(os.path.basename(matlab_file))[0]
     else:
         output_path = output_path_or_file_path
 
         if name is None:
             raise SimulateException("Name must be provided if output_path is a directory")
 
-        output_file = f"{output_path}/{name}.mat"
-        if not os.path.isfile(output_file):
-            raise SimulateException(f"File not found: {output_file}")
+        matlab_file = f"{output_path}/{name}.mat"
+        if not os.path.isfile(matlab_file):
+            raise SimulateException(f"File not found: {matlab_file}")
 
-    if not recompute:
-        output_file = os.path.join(os.path.dirname(output_file), f"stats_{os.path.basename(output_file)}")
+    if use_matlab_stats:
+        matlab_file = os.path.join(os.path.dirname(matlab_file), f"stats_{os.path.basename(matlab_file)}")
 
-    matlab_results = loadmat(output_file)
+    matlab_results = loadmat(matlab_file)
 
     if 'moao' in name.lower() or name.isdigit():
         mode = 'MOAO'
@@ -637,7 +637,21 @@ def load_matlab_results(output_path_or_file_path, name=None, recompute=False, ex
         x = x[sort_indices]
         y = y[sort_indices]
 
-    if recompute:
+    if use_matlab_stats:
+        if max_phase_screens is not None:
+            sr = matlab_results['cumSR'][:,max_phase_screens]
+            fwhm = matlab_results['cumFWHM'][:,max_phase_screens] * 1000.0
+            ee = matlab_results['cumEE01'][:,max_phase_screens]
+        else:
+            sr = matlab_results['sr']
+            fwhm = matlab_results['fwhm'] * 1000.0
+            ee = matlab_results['ee01']
+
+        if len(sort_indices) > 0:
+            sr = sr[sort_indices]
+            fwhm = fwhm[sort_indices]
+            ee = ee[sort_indices]
+    else:
         psfs = rearrange_matlab_psfs(matlab_results['psfs'])
         if len(sort_indices) > 0:
             psfs = psfs[sort_indices]
@@ -655,20 +669,6 @@ def load_matlab_results(output_path_or_file_path, name=None, recompute=False, ex
         sr, fwhm, ee = aostats.get_stats_matlab(psfs, tel_diameter, tel_pupil, wavelength, pixel_scale, ee_size)
 
         results['psfs'] = psfs
-    else:
-        if max_phase_screens is not None:
-            sr = matlab_results['cumSR'][:,max_phase_screens]
-            fwhm = matlab_results['cumFWHM'][:,max_phase_screens] * 1000.0
-            ee = matlab_results['cumEE01'][:,max_phase_screens]
-        else:
-            sr = matlab_results['sr']
-            fwhm = matlab_results['fwhm'] * 1000.0
-            ee = matlab_results['ee01']
-
-        if len(sort_indices) > 0:
-            sr = sr[sort_indices]
-            fwhm = fwhm[sort_indices]
-            ee = ee[sort_indices]
 
     results.update({
         'sr': sr,
