@@ -252,6 +252,11 @@ def get_r0_from_seeing(seeing, wavelength=0.5*u.micron):
     r0 = 0.98 * wavelength.to(u.m) / seeing.to(u.rad).value
     return r0
 
+def get_seeing_from_r0(r0, wavelength=0.5*u.micron):
+    seeing_rad = 0.98 * wavelength.to(u.m) / r0  # result in radians
+    seeing = seeing_rad * u.rad
+    return seeing.to(u.arcsec) 
+
 def get_nph_from_magnitude(config, band, mag):
     D = float(config['telescope']['TelescopeDiameter'])
 
@@ -529,6 +534,73 @@ def rearrange_matlab_psfs(psfs):
 
     return new_psfs
 
+def load_matlab_file(matlab_file, name=None, use_matlab_stats=False):
+    matlab_results = loadmat(matlab_file)
+
+    if name is None:
+        name = os.path.splitext(os.path.basename(matlab_file))[0]
+
+    pixel_scale = matlab_results['parm']['pixelScale']*1000
+    wavelength = matlab_results['parm']['sci']['wavelength'].item()
+    zenith_angle = matlab_results['parm']['atm']['zenithAngle'].item()/np.pi*180
+    seeing = get_seeing_from_r0(matlab_results['parm']['atm']['r0'].item()*u.m).value
+
+    ngs_zd = matlab_results['parm']['nGs']['zeTT'].flatten()
+    ngs_az = matlab_results['parm']['nGs']['azTT'].flatten()
+    ngs_mag = matlab_results['parm']['nGs']['TTmag'].flatten() - 1.26
+
+    lgs_n = int(matlab_results['parm']['lGs']['n'])
+    lgs_zd = matlab_results['parm']['lGs']['zenith']/np.pi*180*3600
+    lgs_az = matlab_results['parm']['lGs']['azimuth']/np.pi*180
+    lgs_mag = matlab_results['parm']['lGs']['magnitude']
+
+    lgs_zd = np.repeat(lgs_zd, lgs_n)
+    lgs_az = np.array([lgs_az + i*360/lgs_n for i in range(lgs_n)])
+    lgs_mag = np.repeat(lgs_mag, lgs_n)
+
+    opt_zd = matlab_results['parm']['ctr']['ho']['fittingZenith'].flatten()
+    opt_zd = np.rad2deg(opt_zd)*3600
+    opt_az = matlab_results['parm']['ctr']['ho']['fittingAzimuth'].flatten()
+    opt_az = np.rad2deg(opt_az)
+
+    r = matlab_results['parm']['sci']['RHO'].flatten()
+    theta = np.rad2deg(matlab_results['parm']['sci']['TH'].flatten())
+    theta[np.isclose(theta, 360.0, atol=2e-4)] = 0.0
+    x = r * np.cos(np.deg2rad(theta))
+    y = r * np.sin(np.deg2rad(theta))
+    x[np.isclose(x, 0, atol=2e-4)] = 0.0
+    y[np.isclose(y, 0, atol=2e-4)] = 0.0
+
+    if matlab_results['parm']['ctr']['oldm'] == 2:
+        mode = 'MOAO'
+    elif max(opt_zd) <= 10*np.sqrt(2) * (1+1e-3):
+        mode = 'LTAO'
+    else:
+        mode = 'GLAO'
+
+    results = {
+        'name': name,
+        'mode': mode,
+        'pixel_scale': pixel_scale,
+        'wavelength': wavelength,
+        'seeing': seeing,
+        'zenith_angle': zenith_angle,
+        'NGS_zd': ngs_zd,
+        'NGS_az': ngs_az,
+        'NGS_mag': ngs_mag,
+        'LGS_zd': lgs_zd,
+        'LGS_az': lgs_az,
+        'LGS_mag': lgs_mag,
+        'opt_zd': opt_zd,
+        'opt_az': opt_az,
+        'r': r,
+        'theta': theta,
+        'x': x,
+        'y': y
+    }
+
+    return results, matlab_results
+
 def load_matlab_results(output_path_or_file_path, name=None, use_matlab_stats=False, extra_vib=None, sort_r=None, sort_theta=None, max_phase_screens=None, ee_size=None, return_psfs=False):
     if max_phase_screens is not None and not use_matlab_stats:
         raise SimulateException("max_phase_screens requires use_matlab_stats=True")
@@ -553,69 +625,7 @@ def load_matlab_results(output_path_or_file_path, name=None, use_matlab_stats=Fa
     if use_matlab_stats:
         matlab_file = os.path.join(os.path.dirname(matlab_file), f"stats_{os.path.basename(matlab_file)}")
 
-    matlab_results = loadmat(matlab_file)
-
-    if 'moao' in name.lower() or name.isdigit():
-        mode = 'MOAO'
-    elif 'ltao' in name.lower():
-        mode = 'LTAO'
-    else:
-        mode = 'GLAO'
-
-    pixel_scale = matlab_results['parm']['pixelScale']*1000
-    wavelength = matlab_results['parm']['sci']['wavelength']
-    zenith_angle = matlab_results['parm']['atm']['zenithAngle']/np.pi*180
-
-    if ee_size is None:
-        if mode == 'LTAO':
-            ee_size = 50.0 * u.mas
-        else:
-            ee_size = 100.0 * u.mas
-    elif not isinstance(ee_size, u.Quantity):
-        ee_size = ee_size * u.mas
-
-    seeing = 0.543 * u.arcsec # median
-
-    ngs_zd = matlab_results['parm']['nGs']['zeTT'].flatten()
-    ngs_az = matlab_results['parm']['nGs']['azTT'].flatten()
-    ngs_mag = matlab_results['parm']['nGs']['TTmag'].flatten() - 1.26
-
-    lgs_n = int(matlab_results['parm']['lGs']['n'])
-    lgs_zd = matlab_results['parm']['lGs']['zenith']/np.pi*180*3600
-    lgs_az = matlab_results['parm']['lGs']['azimuth']/np.pi*180
-    lgs_mag = matlab_results['parm']['lGs']['magnitude']
-
-    lgs_zd = np.repeat(lgs_zd, lgs_n)
-    lgs_az = np.array([lgs_az + i*360/lgs_n for i in range(lgs_n)])
-    lgs_mag = np.repeat(lgs_mag, lgs_n)
-
-    r = matlab_results['parm']['sci']['RHO'].flatten()
-    theta = np.rad2deg(matlab_results['parm']['sci']['TH'].flatten())
-    theta[np.isclose(theta, 360.0, atol=2e-4)] = 0.0
-    x = r * np.cos(np.deg2rad(theta))
-    y = r * np.sin(np.deg2rad(theta))
-    x[np.isclose(x, 0, atol=2e-4)] = 0.0
-    y[np.isclose(y, 0, atol=2e-4)] = 0.0
-
-    results = {
-        'name': name,
-        'mode': mode,
-        'pixel_scale': pixel_scale,
-        'wavelength': wavelength,
-        'seeing': seeing,
-        'zenith_angle': zenith_angle,
-        'NGS_zd': ngs_zd,
-        'NGS_az': ngs_az,
-        'NGS_mag': ngs_mag,
-        'LGS_zd': lgs_zd,
-        'LGS_az': lgs_az,
-        'LGS_mag': lgs_mag,
-        'ee_size': ee_size,
-        'r': r,
-        'theta': theta,
-        'x': x,
-        'y': y
-    }
+    results, matlab_results = load_matlab_file(matlab_file, name=name, use_matlab_stats=use_matlab_stats)
 
     sort_indices = []
     if sort_r is not None or sort_theta is not None:
@@ -637,6 +647,16 @@ def load_matlab_results(output_path_or_file_path, name=None, use_matlab_stats=Fa
         x = x[sort_indices]
         y = y[sort_indices]
 
+    if ee_size is None:
+        if results['mode'] == 'LTAO':
+            results['ee_size'] = 50.0 * u.mas
+        else:
+            results['ee_size'] = 100.0 * u.mas
+    elif isinstance(ee_size, u.Quantity):
+        results['ee_size'] = ee_size
+    else:
+        results['ee_size'] = ee_size * u.mas
+
     if use_matlab_stats:
         if max_phase_screens is not None:
             sr = matlab_results['cumSR'][:,max_phase_screens]
@@ -657,7 +677,7 @@ def load_matlab_results(output_path_or_file_path, name=None, use_matlab_stats=Fa
             psfs = psfs[sort_indices]
 
         if extra_vib is not None:
-            aostats.add_extra_vibrations(psfs, extra_vib, pixel_scale)
+            aostats.add_extra_vibrations(psfs, extra_vib, results['pixel_scale'])
 
         tel_diameter = matlab_results['parm']['tel']['Dsupp']
         pupil_file = os.path.join(output_path, 'pupil.mat')
@@ -666,7 +686,7 @@ def load_matlab_results(output_path_or_file_path, name=None, use_matlab_stats=Fa
         else:
             raise SimulateException(f"File pupil file is missing: {pupil_file}")
 
-        sr, fwhm, ee = aostats.get_stats_matlab(psfs, tel_diameter, tel_pupil, wavelength, pixel_scale, ee_size)
+        sr, fwhm, ee = aostats.get_stats_matlab(psfs, tel_diameter, tel_pupil, results['wavelength'], results['pixel_scale'], results['ee_size'])
 
         results['psfs'] = psfs
 
