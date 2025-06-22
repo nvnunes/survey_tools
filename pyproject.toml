@@ -18,7 +18,7 @@ dependencies = [
     "astropy >= 7.0.0",
     "astroquery",
     "matplotlib",
-    "pyds9  ; platform_system != 'Windows'",
+    "pyds9  ; platform_system != 'Windows' and os.getenv('SKIP_PYDS9') != '1'",
     "regions",
     "compress_pickle",
     "tabulate",
