@@ -1369,11 +1369,17 @@ def _read_FITS_single_column_values(config, hdu, level, key, ao_system):
 
             values = (factor.value if isinstance(factor, u.Quantity) else factor) * data[field]
 
+    if is_density and 'asterism' in key:
+        values *= 60**2  # Convert to 1/deg^2
+
     FITS_format = cols[field].format # pylint: disable=no-member
     unit = cols[field].unit # pylint: disable=no-member
     if is_density:
         FITS_format = 'D'
-        unit = f"{unit}/arcmin^2"
+        if 'asterism' in key:
+            unit = f"{unit}/deg^2"
+        else:
+            unit = f"{unit}/arcmin^2"
 
     return (values, FITS_format, unit)
 
