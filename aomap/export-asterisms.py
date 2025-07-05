@@ -10,9 +10,10 @@ import aomap
 from astropy.table import vstack
 from survey_tools import catalog, healpix
 
+export_all_dec = False
 force_rebuild = False
 config = aomap.read_config('config.yaml')
-dec_limit = [-20,60]
+dec_limit = [-90,90] if export_all_dec else [-20, 60]
 map_level = config.outer_level
 survey = 'ews'
 output_path = '../output'
@@ -20,7 +21,7 @@ output_path = '../output'
 ao_system_names = ['GNAO-Optimal', 'GNAO-Nominal', 'GNAO-Limit']
 
 for ao_system_name in ao_system_names:
-    filename = f"{output_path}/asterisms-{ao_system_name}.fits"
+    filename = f"{output_path}/asterisms-{survey}-{ao_system_name}{'-alldec' if export_all_dec else ''}.fits"
     
     if not force_rebuild and os.path.isfile(filename):
         continue
