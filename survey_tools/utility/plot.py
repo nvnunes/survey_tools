@@ -4,9 +4,14 @@
 # pylint: disable=too-few-public-methods,too-many-public-methods,too-many-instance-attributes,attribute-defined-outside-init
 # pylint: disable=invalid-name,too-many-arguments,too-many-locals,too-many-statements,too-many-branches
 
+from __future__ import annotations
+import importlib
+from typing import TYPE_CHECKING, Any
 import matplotlib.pyplot as plt
 import numpy as np
-import pyds9
+
+if TYPE_CHECKING: # executed only by type checkers / linters
+    import pyds9
 
 class PlotException(Exception):
     pass
@@ -147,7 +152,15 @@ def add_annotation(ax, text, position='topleft', border=False):
 
     ax.text(xy[0], xy[1], text, transform=ax.transAxes, ha=horizontalalignment, va=verticalalignment, bbox=bbox)
 
+def get_pyds9() -> Any:
+    module_name = "pyds9"
+    try:
+        return importlib.import_module(module_name)
+    except ModuleNotFoundError as ex:
+        raise ModuleNotFoundError("pyds9 not found") from ex
+
 def DS9_plot_image(image_hdul):
+    pyds9 = get_pyds9()
     ds9 = pyds9.DS9()
     ds9.set_pyfits(image_hdul) # pylint: disable=too-many-function-args
     ds9.set('scale pow')
