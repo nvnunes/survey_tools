@@ -5,11 +5,15 @@
 # pylint: disable=invalid-name,too-many-arguments,too-many-locals,too-many-statements,too-many-branches
 
 from collections import namedtuple
+import time
 import astropy.units as u
+from IPython.display import clear_output, display
 import numpy as np
+from matplotlib.animation import FuncAnimation
 import matplotlib.pyplot as plt
 from scipy.spatial import Voronoi
 from shapely.geometry import Polygon
+from survey_tools.utility.plot import get_in_ipython
 
 #region Globals
 
@@ -426,11 +430,12 @@ def generate_symmetric_polar_grid(n_rings, n_first_ring, r_min, r_max, delta_n=1
 
     return np.column_stack([x, y])
 
-def plot_polar_grid(r, theta, radius, title=None):
+def plot_polar_grid(r, theta, radius, title=None, hide_labels=False):
     _, ax = plt.subplots(subplot_kw={'projection': 'polar'})
     ax.scatter(theta, r, color='red')
-    ax.set_xlabel('Azimuth')
-    ax.set_ylabel('Zenith')
+    if not hide_labels:
+        ax.set_xlabel('Azimuth')
+        ax.set_ylabel('Zenith')
     ax.set_rlim(0, radius)
     if title is not None:
         plt.title(title)
@@ -445,12 +450,34 @@ Asterism = namedtuple('Asterism', ["r", "theta", "x", "y", "center_r", "center_t
 
 def create_asterism(r, theta):
     coords = polar_to_cartesian(r, theta)
-    center_coords = get_triangle_incenter(coords)
+
+    match np.size(r):
+        case 1:
+            center_coords = coords[0]
+        case 2:
+            center_coords = np.mean(coords, axis=0)
+        case 3:
+            center_coords = get_triangle_incenter(coords)
+        case _:
+            raise ValueError("Asterism must have exactly 1, 2, or 3 stars.")
+
     center_coords_polar = to_polar_coordinates(center_coords)
-    area = get_triangle_area(coords)
-    mean_dist = get_triangle_mean_distance(coords, center_coords=center_coords)
-    score = get_normalized_compactness_score(coords, mean_dist=mean_dist, area=area)
-    return Asterism(r=r, theta=theta, x=coords[0], y=coords[1], center_r=center_coords_polar[0], center_theta=center_coords_polar[1], area=area, scale=2*mean_dist, score=score)
+
+    match np.size(r):
+        case 1:
+            area = 0.0
+            mean_dist = 0.0
+            score = 0.0
+        case 2:
+            area = 0.0
+            mean_dist = np.linalg.norm(coords[0] - coords[1]) / 2
+            score = 0.0
+        case 3:
+            area = get_triangle_area(coords)
+            mean_dist = get_triangle_mean_distance(coords, center_coords=center_coords)
+            score = get_normalized_compactness_score(coords, mean_dist=mean_dist, area=area)
+
+    return Asterism(r=r, theta=theta, x=coords[:,0], y=coords[:,1], center_r=center_coords_polar[0], center_theta=center_coords_polar[1], area=area, scale=2*mean_dist, score=score)
 
 def polar_to_cartesian(r, theta):
     x = r * np.cos(theta)
@@ -671,6 +698,171 @@ def generate_asterisms(r, theta, max_incentre_distance=2.0, return_stats=False):
     else:
         return asterisms
 
+def random_mag(min_mag, max_mag, n, p_dim=0.66):
+    if min_mag >= 16.0:
+        return np.random.uniform(min_mag, max_mag, n)
+
+    bright_range=(min_mag, 16.0)
+    faint_range=(16.0, max_mag)
+    mags = []
+    for _ in range(n):
+        if np.random.random() < p_dim:
+            mags.append(np.random.uniform(*faint_range))
+        else:
+            mags.append(np.random.uniform(*bright_range))
+    return np.array(mags)
+
+def generate_random_1star_asterism(R, min_mag, max_mag, centered=False):
+    if centered:
+        r = np.array([0.0])
+        phi = np.array([0.0])
+    else:
+        r = np.array(np.random.uniform(0.0, R))
+        phi = np.array(np.rad2deg(np.random.uniform(0, 2*np.pi)))
+
+    mag = random_mag(min_mag, max_mag, 1)
+
+    return r, phi, mag
+
+def generate_random_2star_asterism(R, min_mag, max_mag, min_sep=None, centered=False):
+    if min_sep is None:
+        min_sep = R/10.0
+
+    if centered:
+        # 1. random total separation
+        separation = np.random.uniform(min_sep, 2*R)
+
+        # 2. place stars symmetrically about the centre
+        r_each = separation / 2.0
+        r = np.array([r_each, r_each])
+
+        # 3. Random orientation of the pair
+        pphi = np.random.uniform(0, 2*np.pi)
+        phi = np.rad2deg(np.array([pphi, pphi + np.pi])) % 360
+    else:
+        while True:
+            # 1. random POINT inside the FOV (area-uniform)
+            pr     = R * np.sqrt(np.random.random())
+            pphi   = np.random.uniform(0, 2*np.pi)
+            px, py = pr * np.cos(pphi), pr * np.sin(pphi)   # cartesian coords
+
+            # 2. random ORIENTATION of the connecting line
+            axis_phi = np.random.uniform(0, 2*np.pi)
+            ux, uy   = np.cos(axis_phi), np.sin(axis_phi)   # unit vector
+
+            # 3. maximum distance we can move along ±u before leaving the FOV
+            #    solve |p ± t û| = R  →  t_max = √(R² − |p|² + (p·u)²)
+            dot_pu = px*ux + py*uy
+            disc   = R**2 - (px**2 + py**2) + dot_pu**2
+            if disc < 0:
+                continue # shouldn’t happen
+            t_plus  = max(0.0, -dot_pu + np.sqrt(disc))   # distance we can go forward +u)
+            t_minus = max(0.0,  dot_pu + np.sqrt(disc))   # distance we can go backward (–u)
+
+            # 4. choose random distances for EACH star within its own limit
+            d1 = np.random.uniform(0.0, t_plus)   # star 1 (forward direction)
+            d2 = np.random.uniform(0.0, t_minus)  # star 2 (backward direction)
+
+            # 5. Compute positions
+            x1, y1 = px + d1*ux, py + d1*uy
+            x2, y2 = px - d2*ux, py - d2*uy
+
+            # 6. enforce MINIMUM separation; if too small, resample
+            separation = np.hypot(x1 - x2, y1 - y2)
+            if separation < min_sep:
+                continue
+
+            # 7. convert Cartesian to polar
+            r   = np.hypot([x1, x2], [y1, y2])
+            phi = (np.rad2deg(np.arctan2([y1, y2], [x1, x2])) + 360) % 360
+            break
+
+    # 4. random magnitudes
+    mags = random_mag(min_mag, max_mag, 2)
+
+    return r, phi, mags
+
+def generate_random_3star_asterism(R, min_mag, max_mag, min_scale=None, centered=False):
+    if min_scale is None:
+        min_scale = R/10.0
+
+    inradius_min    = min_scale / 4.0 # to generate triangles with scale >= min_asterism_scale
+    p_big_branch    = 0.33 # probability of drawing a “large-scale” asterism
+    k_dirich_small  = 0.40 # κ < 1  → skinny / small-scale branch
+    k_dirich_big    = 5.00 # κ > 1  → near-equilateral / big-scale branch
+    beta_skew_small = 0.30 # Beta(a,1) → skew inradius to LOW end
+    beta_skew_big   = 0.18 # Beta(1,a) → skew inradius to HIGH end
+
+    while True:
+        # 0. choose random branch
+        if np.random.random() < p_big_branch:
+            # large-scale” branch
+            k_dirich  = k_dirich_big
+            beta_a, beta_b = 1.0, beta_skew_big
+        else:
+            # small-scale” branch
+            k_dirich  = k_dirich_small
+            beta_a, beta_b = beta_skew_small, 1.0
+
+        # 1. random interior angles
+        alpha, beta, gamma = np.pi * np.random.dirichlet([k_dirich]*3)                
+
+        # 2. what inradius keeps every vertex inside R?
+        half_angles = np.array([alpha, beta, gamma]) / 2.0
+        inradius_max = R * np.sin(half_angles).min()
+
+        # 3. only accept asterisms that are big enough
+        if inradius_max >= inradius_min:
+            break
+
+    # 4. random incentre radius (biased to help flatten scale distribution)
+    u = np.random.beta(beta_a, beta_b)
+    inradius = inradius_min + (inradius_max - inradius_min) * u
+
+    # 5. vertex polar coords
+    dA = inradius / np.sin(alpha / 2)
+    dB = inradius / np.sin(beta / 2)
+    dC = inradius / np.sin(gamma / 2)
+
+    phiA = np.random.uniform(0, 2*np.pi)
+    phiB = phiA + np.pi - (alpha/2 + beta/2)
+    phiC = phiB + np.pi - (beta/2 + gamma/2)
+
+    r   = np.array([dA, dB, dC])
+    phi = np.rad2deg(np.array([phiA, phiB, phiC])) % 360
+
+    # 6. Optionally shift the asterism away from origin
+    if not centered:
+        # get Cartesian coordinates
+        vx, vy = r * np.cos(np.deg2rad(phi)), r * np.sin(np.deg2rad(phi))
+
+        # random direction for the shift vector
+        theta_shift = np.random.uniform(0, 2 * np.pi)
+        ux, uy   = np.cos(theta_shift), np.sin(theta_shift)      # unit vector û
+
+        # per-vertex maximum travel allowed along +û
+        #    solve |v_i + t û| = R  →  t_max_i = −(v_i·û) + √(R² − |v_i|² + (v_i·û)²)
+        dot_vu   = vx * ux + vy * uy
+        disc     = R**2 - (vx**2 + vy**2) + dot_vu**2
+        t_max_i  = -dot_vu + np.sqrt(disc)
+        t_max = t_max_i.min()
+
+        # random shift length
+        if t_max > 0.0:
+            d_shift = np.random.uniform(0.0, t_max)
+            dx, dy  = d_shift * ux, d_shift * uy
+            vx += dx
+            vy += dy
+
+            # back to polar
+            r   = np.hypot(vx, vy)
+            phi = (np.rad2deg(np.arctan2(vy, vx)) + 360) % 360
+
+    # 6. random magnitudes
+    mag = random_mag(min_mag, max_mag, 3)
+
+    return r, phi, mag
+
 #endregion
 
 #region Concentric Rings
@@ -718,5 +910,61 @@ def plot_concentric_rings(radii, points_r=None, points_theta=None):
     ax.axis('off')
     plt.title(f'Equal Area Rings', fontsize=14, fontweight='bold')
     plt.show()
+
+#endregion
+
+#region Plot Asterisms
+
+def plot_asterisms(asterisms, R, title=None, output_filename=None):
+    fig = plt.figure(figsize=(8, 8))
+    ax = fig.add_subplot(111, projection='polar')
+    if title is not None:
+        ax.set_title(title)
+    ax.set_rticks([10, 20, 30, 40, 50])
+    ax.grid(True)
+    ax.set_rlim(0, R)
+
+    if output_filename is not None:
+        drawn = []  # store plotted lines
+
+        def update(i):
+            asterism = asterisms[i]
+            if len(asterism.r) == 1:
+                raise NotImplementedError("Single-point asterisms are not yet supported in animation.")
+            plot_theta = list(asterism.theta) + [asterism.theta[0]]
+            plot_r = list(asterism.r) + [asterism.r[0]]
+            line, = ax.plot(plot_theta, plot_r, alpha=0.7)
+            drawn.append(line)
+            return line,
+
+        ani = FuncAnimation(fig, update, frames=len(asterisms), interval=500, blit=True)
+        ani.save(output_filename, writer="pillow", fps=2)
+        print(f"Saved animation to {output_filename}")
+    else:
+        is_ipy = get_in_ipython()
+        if not is_ipy:
+            plt.ion()
+
+        for asterism in asterisms:
+            if np.size(asterism.r) == 1:
+                ax.plot(asterism.theta, asterism.r, 'o', markersize=8)
+            else:
+                plot_r = list(asterism.r) + [asterism.r[0]]
+                plot_theta = list(asterism.theta) + [asterism.theta[0]]
+                ax.plot(plot_theta, plot_r, alpha=0.7)
+
+            if is_ipy:
+                clear_output(wait=True)
+                display(fig)
+                time.sleep(0.5)
+            else:
+                fig.canvas.draw()
+                plt.pause(0.5)
+
+        if not is_ipy:
+            plt.ioff()
+            plt.show()
+
+    plt.close(fig)
 
 #endregion
