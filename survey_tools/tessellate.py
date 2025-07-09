@@ -915,7 +915,7 @@ def plot_concentric_rings(radii, points_r=None, points_theta=None):
 
 #region Plot Asterisms
 
-def plot_asterisms(asterisms, R, title=None, output_filename=None):
+def plot_asterisms(asterisms, R=60.0, title=None, output_filename=None):
     fig = plt.figure(figsize=(8, 8))
     ax = fig.add_subplot(111, projection='polar')
     if title is not None:
