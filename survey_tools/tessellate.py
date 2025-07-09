@@ -717,8 +717,8 @@ def generate_random_1star_asterism(R, min_mag, max_mag, centered=False):
         r = np.array([0.0])
         phi = np.array([0.0])
     else:
-        r = np.array(np.random.uniform(0.0, R))
-        phi = np.array(np.rad2deg(np.random.uniform(0, 2*np.pi)))
+        r = np.array([np.random.uniform(0.0, R)])
+        phi = np.array([np.rad2deg(np.random.uniform(0, 2*np.pi))])
 
     mag = random_mag(min_mag, max_mag, 1)
 
