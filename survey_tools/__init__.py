@@ -5,7 +5,6 @@ __all__ = [
     'healpix',
     'match',
     'sky',
-    'tessellate',
     'utility'
 ]
 

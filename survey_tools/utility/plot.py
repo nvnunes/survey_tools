@@ -19,13 +19,6 @@ class PlotException(Exception):
 class StructType:
     pass
 
-def get_in_ipython():
-    try:
-        from IPython import get_ipython
-        return get_ipython() is not None
-    except Exception:
-        return False
-
 def get_plot_colours(plot_mode, use_accessible_colours = True):
     plot_colours = StructType()
 
