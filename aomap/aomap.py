@@ -5,6 +5,7 @@
 # pylint: disable=invalid-name,too-many-arguments,too-many-locals,too-many-statements,too-many-branches
 
 from contextlib import contextmanager
+import multiprocessing as mp
 import os
 import shutil
 import signal
@@ -22,6 +23,7 @@ from dustmaps.config import config as dustmaps_config
 import dustmaps.gaia_tge as gaia_tge
 from joblib import Parallel, delayed
 from survey_tools import asterism, gaia, healpix
+from ao_tools import training
 
 #region Globals
 
@@ -124,6 +126,13 @@ def read_config(config_or_filename):
                 raise AOMapException('ao_system fov required')
             if 'fov_1ngs' not in ao_system:
                 ao_system['fov_1ngs'] = ao_system['fov']
+            if 'lgs' not in ao_system:
+                ao_system['lgs'] = [
+                    {"zd": 30.0, "az": 45    },
+                    {"zd": 30.0, "az": 45+90 },
+                    {"zd": 30.0, "az": 45+180},
+                    {"zd": 30.0, "az": 45+270},
+                ]
             if 'min_wfs' not in ao_system:
                 raise AOMapException('ao_system min_wfs required')
             if 'max_wfs' not in ao_system:
@@ -144,11 +153,17 @@ def read_config(config_or_filename):
                 ao_system['min_rel_area'] = 0.0
             if 'max_rel_area' not in ao_system:
                 ao_system['max_rel_area'] = 0.0
+            if 'models' not in ao_system:
+                ao_system['models'] = {}
+            if 'rot_range' not in ao_system:
+                ao_system['rot_range'] = None
+            if 'rot_step' not in ao_system:
+                ao_system['rot_step'] = None
 
-            ao_system['fov']      = ao_system['fov']      * u.arcsec
-            ao_system['fov_1ngs'] = ao_system['fov_1ngs'] * u.arcsec
-            ao_system['min_sep']  = ao_system['min_sep']  * u.arcsec
-            ao_system['max_sep']  = ao_system['max_sep']  * u.arcsec
+            ao_system['fov']      *= u.arcsec
+            ao_system['fov_1ngs'] *= u.arcsec
+            ao_system['min_sep']  *= u.arcsec
+            ao_system['max_sep']  *= u.arcsec
 
     if not hasattr(config, 'max_dust_extinction'):
         config.max_dust_extinction = None
@@ -304,29 +319,41 @@ def build_inner(config_or_filename, mode='recalc', pixs=None, force_reload_gaia=
     start_time = time.time()
     last_time = start_time
 
+    def warmup():
+        _load_models(config.ao_systems)
+
+    if config.cores > 1:
+        mp.set_start_method('spawn', force=True)
+        parallel_pool = Parallel(n_jobs=config.cores, backend="loky", max_nbytes=None, timeout=None, idle_worker_timeout=None, initializer=warmup)
+    else:
+        warmup()
+
     for i in range(num_chunks):
         start_idx = i * chunk_size
         end_idx = min((i+1)*chunk_size, num_todo)
 
         if config.cores == 1:
             num_excluded = 0
+            num_asterisms = 0
             for outer_pix in todo_pix[start_idx:end_idx]:
                 results = _build_outer(config, mode, outer_pix, force_reload_gaia, verbose)
                 done[outer_pix] = results[0]
                 excluded[outer_pix] = results[1]
                 num_excluded += results[1]
+                num_asterisms += results[2]
         else:
-            results = np.array(Parallel(n_jobs=config.cores)(delayed(_build_outer)(config, mode, outer_pix, force_reload_gaia, verbose) for outer_pix in todo_pix[start_idx:end_idx]))
-            done[todo_pix[start_idx:end_idx]]= results[:,0]
+            results = np.array(parallel_pool(delayed(_build_outer)(config, mode, outer_pix, force_reload_gaia, verbose) for outer_pix in todo_pix[start_idx:end_idx]))
+            done[todo_pix[start_idx:end_idx]] = results[:,0]
             excluded[todo_pix[start_idx:end_idx]] = results[:,1]
             num_excluded = np.sum(results[:,1])
+            num_asterisms = np.sum(results[:,2])
 
         outer.flush()
 
         elapsed_time = time.time() - last_time
         last_time = time.time()
         current_time = time.strftime("%H:%M:%S", time.localtime())
-        print(f"\r  {current_time}: {todo_pix[end_idx-1]+1}/{npix} ({end_idx-start_idx}px in {elapsed_time:.2f}s, {num_excluded} excluded)           ", end='', flush=True)
+        print(f"\r  {current_time}: {todo_pix[end_idx-1]+1}/{npix} ({end_idx-start_idx}px in {elapsed_time:.2f}s, {num_excluded} excluded, {num_asterisms} asterisms)           ", end='', flush=True)
 
     total_time = time.time() - start_time
     print(f"\n  done: {num_todo}px in {total_time:.1f}s")
@@ -753,16 +780,18 @@ def _get_outer_excluded(outer):
 def _build_outer(config, mode, outer_pix, force_reload_gaia, verbose=False):
     [success, excluded] = _build_inner_data(config, mode, outer_pix, force_reload_gaia)
 
+    num_asterisms = 0
     if success and not excluded:
         for ao_system in config.ao_systems:
-            [success, _] = _build_asterisms(config, mode, outer_pix, ao_system['name'], verbose=verbose)
+            [success, _, sys_num_asterisms] = _build_asterisms(config, mode, outer_pix, ao_system['name'], verbose=verbose)
+            num_asterisms = max(num_asterisms, sys_num_asterisms)
             if not success:
                 break
 
     if not success:
-        return [False, False]
+        return [False, False, num_asterisms]
 
-    return [True, excluded]
+    return [True, excluded, num_asterisms]
 
 #endregion
 
@@ -963,6 +992,7 @@ def _build_asterisms(config, mode, outer_pix, ao_system_name, verbose=False):
     if np.abs(galactic_coord.b.degree) < config.asterisms_min_galactic_latitude:
         excluded = True
 
+    num_asterisms = 0
     if not excluded:
         match mode:
             case 'build':
@@ -972,11 +1002,11 @@ def _build_asterisms(config, mode, outer_pix, ao_system_name, verbose=False):
                 use_existing = False
 
         if not use_existing:
-            success = _create_asterisms(config, outer_pix, ao_system_name, verbose=verbose)
+            success, num_asterisms = _create_asterisms(config, outer_pix, ao_system_name, verbose=verbose)
             if not success:
-                return [False, False]
+                return [False, False, num_asterisms]
 
-    return [True, excluded]
+    return [True, excluded, num_asterisms]
 
 def _create_asterisms(config, outer_pix, ao_system_name, verbose=False):
     asterisms = find_outer_asterisms(config, outer_pix, ao_system_name, verbose=verbose)
@@ -984,7 +1014,7 @@ def _create_asterisms(config, outer_pix, ao_system_name, verbose=False):
         return False
     if len(asterisms) > 0:
         _save_asterisms(config, outer_pix, ao_system_name, asterisms)
-    return True
+    return True, len(asterisms)
 
 def get_stars_for_asterisms(config, outer_pix, neighbour_level=None, required_band=None, use_cache=False):
     gaia_data = _get_gaia_stars_in_outer_pixel(config, outer_pix, use_cache=use_cache)
@@ -1153,7 +1183,73 @@ def find_outer_asterisms(config, outer_pix, ao_system_name, skip_overlaps=False,
     else:
         return asterisms
 
+model_cache = {}
+
+def _load_models(ao_systems):
+    model_cache = {}
+    for ao_system in ao_systems:
+        model_cache[ao_system['name']] = {}
+        for key, model_name in ao_system['models'].items():
+            model = training.load_model('../data/models', model_name, force_cpu=True)
+            model_cache[ao_system['name']][key] = model
+
+def _get_asterisms_EE(asterisms, ao_system, batch_size=10000):
+    if 'models' not in ao_system or len(ao_system['models']) == 0:
+        raise AOMapException("No models found in ao_system")
+
+    qualities = np.zeros((len(asterisms)))
+
+    for num_stars in range(ao_system['min_wfs'], ao_system['max_wfs'] + 1):
+        key = f"{num_stars}star"
+        indexes = np.flatnonzero(asterisms['num_stars'] == num_stars)
+        N = len(indexes)
+        if N > 0 and key in ao_system['models']:
+            if ao_system['name'] in model_cache and key in model_cache[ao_system['name']]:
+                model = model_cache[ao_system['name']][key]
+            else:
+                model = training.load_model('../data/models', ao_system['models'][key], force_cpu=True)
+
+            num_batches = int(np.ceil(N/batch_size))
+            for batch in range(num_batches):
+                start_idx = batch * batch_size
+                end_idx = min((batch + 1) * batch_size, N)
+                if start_idx >= end_idx:
+                    continue
+                batch_indexes = indexes[start_idx:end_idx]
+
+                data = {
+                    'wavelength': 1.654 * u.micron, # H-band
+                    'lgs': ao_system['lgs'],
+                    'ngs': asterism.get_ngs_from_asterisms(asterisms[batch_indexes])
+                }
+
+                X = training.get_model_X(data, mean_only=True)
+                if ao_system['rot_range'] is not None and ao_system['rot_step'] is not None:
+                    theta_idxs = training.get_ngs_theta_indexes(num_stars)
+                    rot_angles = [0.0] + [angle for angle in np.arange(ao_system['rot_range'][0], ao_system['rot_range'][1], ao_system['rot_step']) if angle != 0]
+                    ee_max = np.zeros((X.shape[0]))
+                    last_rot_angle = 0.0
+                    for rot_angle in rot_angles:
+                        delta_theta = np.deg2rad(rot_angle - last_rot_angle)
+                        if delta_theta != 0:
+                            X[:, theta_idxs] += delta_theta
+                            X[:, theta_idxs] = training.wrap_angle_rad(X[:, theta_idxs])
+                        Y_pred = training.get_prediction(X, model)
+                        ee_max = np.maximum(ee_max, Y_pred[:, training.get_ee_index()])
+                        last_rot_angle = rot_angle
+                    qualities[batch_indexes] = ee_max
+                else:
+                    Y_pred = training.get_prediction(X, model)
+                    qualities[batch_indexes] = Y_pred[:, training.get_ee_index()]
+
+                training.clear_cache(model)
+
+    return qualities
+
 def _get_asterism_quality(asterisms, ao_system):
+    if 'models' in ao_system:
+        return _get_asterisms_EE(asterisms, ao_system)
+
     qualities = np.zeros((len(asterisms)))
 
     max_separation = ao_system['fov'].to(u.arcsec).value

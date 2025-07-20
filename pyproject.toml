@@ -29,7 +29,8 @@ dependencies = [
     "dust_extinction",
     "dustmaps",
     "mocpy",
-    "shapely"
+    "shapely",
+    "girmos-aosims @ git+ssh://git@github.com/nvnunes/girmos-aosims.git"
 ]
 dynamic = ["version"]
 

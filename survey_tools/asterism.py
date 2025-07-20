@@ -370,6 +370,38 @@ def _merge_asterism_buffers(buffer):
 
             setattr(buffer, fields[i], merged_field)
 
+def get_ngs_from_asterisms(asterisms):
+    ngs = []
+    for asterism in asterisms:
+        stars = []
+
+        r1, theta1 = compute_relative_polar_coords(asterism['ra'], asterism['dec'], asterism['star1_ra'], asterism['star1_dec'])
+        stars.append({
+            'zd': r1,
+            'az': theta1,
+            'mag': asterism['star1_mag']
+        })
+
+        if asterism['num_stars'] >= 2:
+            r2, theta2 = compute_relative_polar_coords(asterism['ra'], asterism['dec'], asterism['star2_ra'], asterism['star2_dec'])
+            stars.append({
+                'zd': r2,
+                'az': theta2,
+                'mag': asterism['star2_mag']
+            })
+
+        if asterism['num_stars'] == 3:
+            r3, theta3 = compute_relative_polar_coords(asterism['ra'], asterism['dec'], asterism['star3_ra'], asterism['star3_dec'])
+            stars.append({
+                'zd': r3,
+                'az': theta3,
+                'mag': asterism['star3_mag']
+            })
+
+        ngs.append(stars)
+
+    return ngs
+
 #endregion
 
 #region Utilities
@@ -566,5 +598,32 @@ def get_circle_overlap_area(R1, R2, d):
     term3 = 0.5 * np.sqrt((-d + R1 + R2) * (d + R1 - R2) * (d - R1 + R2) * (d + R1 + R2))
 
     return term1 + term2 - term3
+
+
+def compute_relative_polar_coords(center_ra, center_dec, ra, dec):
+    # Convert all angles to radians
+    ra0 = np.deg2rad(center_ra)
+    dec0 = np.deg2rad(center_dec)
+    ra = np.deg2rad(ra)
+    dec = np.deg2rad(dec)
+
+    # Differences
+    delta_ra = ra - ra0
+    delta_dec = dec - dec0
+
+    # Angular separation (Vincenty formula)
+    sin_ddec2 = np.sin(delta_dec / 2.0)
+    sin_dra2 = np.sin(delta_ra / 2.0)
+    a = sin_ddec2**2 + np.cos(dec0) * np.cos(dec) * sin_dra2**2
+    c = 2 * np.arcsin(np.sqrt(a))
+    r = np.rad2deg(c) * 3600.0 # arcsec
+
+    # Position angle θ (East of North)
+    y = np.sin(delta_ra) * np.cos(dec)
+    x = np.cos(dec0) * np.sin(dec) - np.sin(dec0) * np.cos(dec) * np.cos(delta_ra)
+    theta_rad = np.arctan2(y, x)
+    theta = np.rad2deg(theta_rad)
+
+    return r, theta
 
 #endregion

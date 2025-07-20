@@ -1,6 +1,6 @@
 folder: ../data/maps
-cores: 10                     #  1: no parallelism, >1: number of cores, -1: all cores
-chunk_multiple: 10            #  0: skip chunking, chunk_size = cores * chunk_multiple = number of pixels computed between updates to disk
+cores: 5                      #  1: no parallelism, >1: number of cores, -1: all cores
+chunk_multiple: 5             #  0: skip chunking, chunk_size = cores * chunk_multiple = number of pixels computed between updates to disk
 outer_level: 6                #  6: 55 arcmin resolution
 max_data_level: 9             #  9:  7 arcmin resolution
 inner_level: 14               # 14: 13 arcsec resolution
@@ -10,47 +10,72 @@ asterism_epoch: 2028.0        # epoch for star coordinates
 #build_pixs: 26                # limit building to specific pixels
 
 ao_systems:
-  - name: GNAO-Limit
-    rank: 3
+  # - name: GNAO-Limit
+  #   rank: 3
+  #   band: R
+  #   fov     : 120.0 # [diameter, arcsec]
+  #   fov_1ngs:  60.0 # [diameter, arcsec]
+  #   min_wfs : 2
+  #   max_wfs : 3
+  #   min_mag :   8.0 # Vega
+  #   nom_mag :  16.0 # Vega (nominal)
+  #   max_mag :  18.5 # Vega
+  #   min_sep :   5.0 # [arcsec]
+  #   max_sep : 120.0 # [arcsec]
+  # - name: GNAO-Nominal
+  #   rank: 2
+  #   band: R
+  #   fov:      120.0 # [diameter, arcsec]
+  #   fov_1ngs:  60.0 # [diameter, arcsec]
+  #   min_wfs : 2
+  #   max_wfs : 3
+  #   min_mag :   8.0 # Vega
+  #   nom_mag :  16.0 # Vega (nominal)
+  #   max_mag :  17.0 # Vega
+  #   min_sep :   5.0 # [arcsec]
+  #   max_sep : 120.0 # [arcsec]
+  # - name: GNAO-Optimal
+  #   rank: 1
+  #   band: R
+  #   fov:      120.0 # [diameter, arcsec]
+  #   fov_1ngs:  60.0 # [diameter, arcsec]
+  #   min_wfs : 3
+  #   max_wfs : 3
+  #   min_mag :   8.0 # Vega
+  #   nom_mag :  16.0 # Vega (nominal)
+  #   max_mag :  16.0 # Vega
+  #   min_sep :   5.0 # [arcsec]
+  #   max_sep : 120.0 # [arcsec]
+  #   min_rel_area: 0.50 # relative to optimal triangle area
+  #   max_rel_area: 4.00 # relative to optimal triangle area
+  - name: GNAO
+    rank: 1
     band: R
     fov     : 120.0 # [diameter, arcsec]
     fov_1ngs:  60.0 # [diameter, arcsec]
+    lgs:
+      - zd: 30.0
+        az: 45
+      - zd: 30.0
+        az: 135
+      - zd: 30.0
+        az: 225
+      - zd: 30.0
+        az: 315
     min_wfs : 2
     max_wfs : 3
     min_mag :   8.0 # Vega
-    nom_mag :  16.0 # Vega (nominal)
+    nom_mag :  16.0 # Vega
+    dim_mag :  18.0 # Vega
     max_mag :  18.5 # Vega
     min_sep :   5.0 # [arcsec]
     max_sep : 120.0 # [arcsec]
-  - name: GNAO-Nominal
-    rank: 2
-    band: R
-    fov:      120.0 # [diameter, arcsec]
-    fov_1ngs:  60.0 # [diameter, arcsec]
-    min_wfs : 2
-    max_wfs : 3
-    min_mag :   8.0 # Vega
-    nom_mag :  16.0 # Vega (nominal)
-    max_mag :  17.0 # Vega
-    min_sep :   5.0 # [arcsec]
-    max_sep : 120.0 # [arcsec]
-  - name: GNAO-Optimal
-    rank: 1
-    band: R
-    fov:      120.0 # [diameter, arcsec]
-    fov_1ngs:  60.0 # [diameter, arcsec]
-    min_wfs : 3
-    max_wfs : 3
-    min_mag :   8.0 # Vega
-    nom_mag :  16.0 # Vega (nominal)
-    max_mag :  16.0 # Vega
-    min_sep :   5.0 # [arcsec]
-    max_sep : 120.0 # [arcsec]
-#    min_rel_sep : 0.25 # relative to max separation
-#    max_rel_sep : 1.00 # relative to max separation
-    min_rel_area: 0.50 # relative to optimal triangle area
-    max_rel_area: 4.00 # relative to optimal triangle area
-
+    models:
+      1star: ao_model_rnd_1star_expanded_mean_1024-512
+      2star: ao_model_rnd_2star_expanded_mean_1024-512
+      3star: ao_model_rnd_3star_expanded_mean_1024-512
+    rot_range: [0.0, 45.0] # [degrees]
+    rot_step: 1.0 # [degrees]
 max_dust_extinction: 0.3    # Av
 min_ecliptic_latitude: 15.0 # degree
 
