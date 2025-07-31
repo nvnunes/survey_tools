@@ -336,13 +336,13 @@ def build_inner(config_or_filename, mode='recalc', pixs=None, force_reload_gaia=
             num_excluded = 0
             num_asterisms = 0
             for outer_pix in todo_pix[start_idx:end_idx]:
-                results = _build_outer(config, mode, outer_pix, force_reload_gaia, verbose)
+                results = _build_outer_pix(config, mode, outer_pix, force_reload_gaia, verbose)
                 done[outer_pix] = results[0]
                 excluded[outer_pix] = results[1]
                 num_excluded += results[1]
                 num_asterisms += results[2]
         else:
-            results = np.array(parallel_pool(delayed(_build_outer)(config, mode, outer_pix, force_reload_gaia, verbose) for outer_pix in todo_pix[start_idx:end_idx]))
+            results = np.array(parallel_pool(delayed(_build_outer_pix)(config, mode, outer_pix, force_reload_gaia, verbose) for outer_pix in todo_pix[start_idx:end_idx]))
             done[todo_pix[start_idx:end_idx]] = results[:,0]
             excluded[todo_pix[start_idx:end_idx]] = results[:,1]
             num_excluded = np.sum(results[:,1])
@@ -777,32 +777,35 @@ def _get_outer_done(outer):
 def _get_outer_excluded(outer):
     return outer[1].data[FITS_COLUMN_EXCLUDED]
 
-def _build_outer(config, mode, outer_pix, force_reload_gaia, verbose=False):
+def _build_outer_pix(config, mode, outer_pix, force_reload_gaia, verbose=False):
     [success, excluded] = _build_inner_data(config, mode, outer_pix, force_reload_gaia)
 
-    num_asterisms = 0
+    max_num_asterisms = 0
     if success and not excluded:
         for ao_system in config.ao_systems:
-            [success, _, sys_num_asterisms] = _build_asterisms(config, mode, outer_pix, ao_system['name'], verbose=verbose)
-            num_asterisms = max(num_asterisms, sys_num_asterisms)
+            [success, _, num_asterisms] = _build_asterisms(config, mode, outer_pix, ao_system['name'], verbose=verbose)
+            max_num_asterisms = max(max_num_asterisms, num_asterisms)
             if not success:
                 break
 
     if not success:
-        return [False, False, num_asterisms]
+        excluded = False
 
-    return [True, excluded, num_asterisms]
+    return [success, excluded, max_num_asterisms]
 
 #endregion
 
 #region Inner
 
 def _build_inner_data(config, mode, outer_pix, force_reload_gaia):
-    excluded = False
-    # Exclusions that DO NOT require inner_data go here: excluded = ...
-    if not excluded:
-        skip = False
+    inner_data = None
 
+    # Exclusions that DO NOT require inner_data go here: excluded = ...
+    excluded = False
+
+    if excluded:
+        success = True
+    else:
         match mode:
             case 'build' | 'recalc':
                 inner_filename = _get_inner_pixel_data_filename(config, outer_pix)
@@ -811,24 +814,31 @@ def _build_inner_data(config, mode, outer_pix, force_reload_gaia):
                 use_existing = False
 
         if use_existing:
-            inner_data = _load_inner(config, outer_pix)
+            # Uncomment if inner data is needed for exclusions below
+            # inner_data = _load_inner(config, outer_pix)
+            success = True
         else:
             try:
                 inner_data = _create_inner(config, outer_pix, num_retries=3, force_reload_gaia=force_reload_gaia)
+                success = True
             except (ConnectionResetError, FileNotFoundError) as e:
-                skip = True
                 print(f"Error building inner data for {outer_pix}:\n{e}")
                 traceback.print_exc()
+                # Leave this outer pixel to do in the future
+                success = False
+                return np.array([False, False])
 
-        if skip:
-            # Leave this outer pixel to do in the future
-            return np.array([False, False])
+        if success:
+            # Exclusions that DO require inner_data go here: excluded = ...
+            pass
 
         if inner_data is not None:
-            # Exclusions that DO require inner_data go here: excluded = ...
             inner_data.close()
 
-    return np.array([True, excluded])
+    if not success:
+        excluded = False
+
+    return np.array([success, excluded])
 
 def _get_inner_pixel_data_column(inner_data, column_name):
     if column_name not in inner_data[1].columns.names:
@@ -985,15 +995,14 @@ def _get_gaia_stars_in_outer_pixel(config, outer_pix, num_retries=1, force_reloa
 #region Asterisms
 
 def _build_asterisms(config, mode, outer_pix, ao_system_name, verbose=False):
-    excluded = False
-
     # Exclusions that DO NOT require asterisms go here: excluded = ...
     galactic_coord = healpix.get_pixel_skycoord(config.outer_level, outer_pix).galactic
-    if np.abs(galactic_coord.b.degree) < config.asterisms_min_galactic_latitude:
-        excluded = True
+    excluded = np.abs(galactic_coord.b.degree) < config.asterisms_min_galactic_latitude
 
-    num_asterisms = 0
-    if not excluded:
+    if excluded:
+        success = True
+        num_asterisms = 0
+    else:
         match mode:
             case 'build':
                 asterism_filename = _get_asterisms_data_filename(config, outer_pix, ao_system_name)
@@ -1001,12 +1010,16 @@ def _build_asterisms(config, mode, outer_pix, ao_system_name, verbose=False):
             case 'rebuild' | 'recalc':
                 use_existing = False
 
-        if not use_existing:
+        if use_existing:
+            success = True
+            num_asterisms = 0
+        else:
             success, num_asterisms = _create_asterisms(config, outer_pix, ao_system_name, verbose=verbose)
-            if not success:
-                return [False, False, num_asterisms]
 
-    return [True, excluded, num_asterisms]
+    if not success:
+        excluded = False
+
+    return [success, excluded, num_asterisms]
 
 def _create_asterisms(config, outer_pix, ao_system_name, verbose=False):
     asterisms = find_outer_asterisms(config, outer_pix, ao_system_name, verbose=verbose)
@@ -1197,22 +1210,25 @@ def _get_asterisms_EE(asterisms, ao_system, batch_size=10000):
     if 'models' not in ao_system or len(ao_system['models']) == 0:
         raise AOMapException("No models found in ao_system")
 
+    check_angles = ao_system['rot_range'] is not None and ao_system['rot_step'] is not None
+
     qualities = np.zeros((len(asterisms)))
+    best_angles = np.zeros((len(asterisms)))
 
     for num_stars in range(ao_system['min_wfs'], ao_system['max_wfs'] + 1):
         key = f"{num_stars}star"
         indexes = np.flatnonzero(asterisms['num_stars'] == num_stars)
-        N = len(indexes)
-        if N > 0 and key in ao_system['models']:
+        num_asterisms = len(indexes)
+        if num_asterisms > 0 and key in ao_system['models']:
             if ao_system['name'] in model_cache and key in model_cache[ao_system['name']]:
                 model = model_cache[ao_system['name']][key]
             else:
                 model = training.load_model('../data/models', ao_system['models'][key], force_cpu=True)
 
-            num_batches = int(np.ceil(N/batch_size))
+            num_batches = int(np.ceil(num_asterisms/batch_size))
             for batch in range(num_batches):
                 start_idx = batch * batch_size
-                end_idx = min((batch + 1) * batch_size, N)
+                end_idx = min((batch + 1) * batch_size, num_asterisms)
                 if start_idx >= end_idx:
                     continue
                 batch_indexes = indexes[start_idx:end_idx]
@@ -1224,10 +1240,13 @@ def _get_asterisms_EE(asterisms, ao_system, batch_size=10000):
                 }
 
                 X = training.get_model_X(data, mean_only=True)
-                if ao_system['rot_range'] is not None and ao_system['rot_step'] is not None:
+                if check_angles:
                     theta_idxs = training.get_ngs_theta_indexes(num_stars)
                     rot_angles = [0.0] + [angle for angle in np.arange(ao_system['rot_range'][0], ao_system['rot_range'][1], ao_system['rot_step']) if angle != 0]
-                    ee_max = np.zeros((X.shape[0]))
+
+                    batch_ee_max = np.zeros((X.shape[0]))
+                    batch_best_angles = np.zeros((X.shape[0]))
+
                     last_rot_angle = 0.0
                     for rot_angle in rot_angles:
                         delta_theta = np.deg2rad(rot_angle - last_rot_angle)
@@ -1235,14 +1254,21 @@ def _get_asterisms_EE(asterisms, ao_system, batch_size=10000):
                             X[:, theta_idxs] += delta_theta
                             X[:, theta_idxs] = training.wrap_angle_rad(X[:, theta_idxs])
                         Y_pred = training.get_prediction(X, model)
-                        ee_max = np.maximum(ee_max, Y_pred[:, training.get_ee_index()])
+                        ee = Y_pred[:, training.get_ee_index()]
+                        batch_best_angles[ee > batch_ee_max] = rot_angle
+                        batch_ee_max = np.maximum(batch_ee_max, ee)
                         last_rot_angle = rot_angle
-                    qualities[batch_indexes] = ee_max
+
+                    qualities[batch_indexes] = batch_ee_max
+                    best_angles[batch_indexes] = batch_best_angles
                 else:
                     Y_pred = training.get_prediction(X, model)
                     qualities[batch_indexes] = Y_pred[:, training.get_ee_index()]
 
                 training.clear_cache(model)
+
+    asterisms['best_ee'] = qualities
+    asterisms['best_angle'] = best_angles
 
     return qualities
 

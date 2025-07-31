@@ -74,6 +74,10 @@ ao_systems:
       1star: ao_model_rnd_1star_expanded_mean_1024-512
       2star: ao_model_rnd_2star_expanded_mean_1024-512
       3star: ao_model_rnd_3star_expanded_mean_1024-512
+    point_models:
+      1star: ao_model_rnd_1star_1024-512-256
+      2star: ao_model_rnd_2star_1024-512-256
+      3star: ao_model_rnd_3star_1024-512-256
     rot_range: [0.0, 45.0] # [degrees]
     rot_step: 1.0 # [degrees]
 max_dust_extinction: 0.3    # Av
