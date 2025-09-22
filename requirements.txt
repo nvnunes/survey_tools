@@ -15,4 +15,6 @@ dust_extinction
 dustmaps
 mocpy
 shapely
+reproject
+vorbin
 git+ssh://git@github.com/nvnunes/girmos-aosims.git@develop#egg=girmos-aosims

@@ -30,6 +30,8 @@ dependencies = [
     "dustmaps",
     "mocpy",
     "shapely",
+    "reproject",
+    "vorbin",
     "girmos-aosims @ git+ssh://git@github.com/nvnunes/girmos-aosims.git@develop"
 ]
 dynamic = ["version"]
