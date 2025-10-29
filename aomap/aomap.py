@@ -1545,7 +1545,18 @@ def _get_data_values(config, level, keys, ao_system, return_details=False):
     hdul.close()
     return retval
 
-def get_map_data(config, map_level, key, level=None, pixs=None, coords=(), ra_limit=None, dec_limit=None, survey=None, allow_slow=False):
+def get_dummy_map_data(config, map_level, dummy_value=1.0, level=None, pixs=None, coords=(), ra_limit=None, dec_limit=None, survey=None, allow_slow=False):
+    map_data = get_map_data(config, map_level, 'star-count', level=level, pixs=pixs, coords=coords, ra_limit=ra_limit, dec_limit=dec_limit, survey=survey, allow_slow=allow_slow)
+    map_data.key = 'dummy'
+    map_data.values = np.full_like(map_data.values, dummy_value, dtype=np.float64)
+    map_data.FITS_format = 'D'
+    map_data.unit = None
+    map_data.num_format = None
+    map_data.norm = None
+    map_data.title = None
+    return map_data
+
+def get_map_data(config, map_level, key, level=None, pixs=None, coords=(), ra_limit=None, dec_limit=None, survey=None, allow_slow=False, nan_below=None):
     if pixs is not None and level is None:
         raise AOMapException('level required if pixs is provided')
 
@@ -1655,6 +1666,9 @@ def get_map_data(config, map_level, key, level=None, pixs=None, coords=(), ra_li
         map_values = map_values[dec_filter]
         map_coords = map_coords[dec_filter]
 
+    if nan_below is not None:
+        map_values[map_values < nan_below] = np.nan
+
     if FITS_format == 'K' or FITS_format == 'L':
         num_format = '{x:.0f}'
     else:
@@ -1675,6 +1689,26 @@ def get_map_data(config, map_level, key, level=None, pixs=None, coords=(), ra_li
     map_data.norm = _get_map_norm(key, unit)
     map_data.title = _get_map_title(key, ao_system)
     return map_data
+
+def mask_map_data(map_data, mask):
+    if mask is None:
+        return map_data
+
+    if len(mask) != len(map_data.pixs):
+        raise AOMapException('mask length does not match map data length')
+
+    masked_map_data = StructType()
+    masked_map_data.key = map_data.key
+    masked_map_data.level = map_data.level
+    masked_map_data.pixs = map_data.pixs[mask]
+    masked_map_data.values = map_data.values[mask]
+    masked_map_data.coords = map_data.coords[mask]
+    masked_map_data.FITS_format = map_data.FITS_format
+    masked_map_data.unit = map_data.unit
+    masked_map_data.num_format = map_data.num_format
+    masked_map_data.norm = map_data.norm
+    masked_map_data.title = map_data.title
+    return masked_map_data
 
 def get_map_table(config, map_level, key, level=None, pixs=None, coords=(), ra_limit=None, dec_limit=None, survey=None):
     map_data = get_map_data(config, map_level, key, level=level, pixs=pixs, coords=coords, ra_limit=ra_limit, dec_limit=dec_limit, survey=survey)
@@ -1730,7 +1764,10 @@ def plot_map(map_data=None,
             ecliptic=False,                # display outline of the ecliptic
             ecliptic_width=None,           # number of degrees north/south to draw dotted line
             colors=None,
+            alphas=None,
             fontsize=None,
+            hide_title=False,
+            hide_cbar=False,
             return_fig = False
     ):
 
@@ -1883,7 +1920,10 @@ def plot_map(map_data=None,
         'ecliptic': ecliptic,
         'ecliptic_width': ecliptic_width,
         'colors': colors,
+        'alphas': alphas,
         'fontsize': fontsize,
+        'hide_title': hide_title,
+        'hide_cbar': hide_cbar
     })
 
     if return_fig:
