@@ -6,6 +6,7 @@
 
 import aomap
 import argparse
+import os
 
 ####################################################################################
 # Build Modes:
@@ -23,7 +24,9 @@ args = parser.parse_args()
 mode = args.mode
 verbose = args.verbose
 
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
 config = aomap.read_config('config.yaml')
+
 aomap.build_inner(config, mode=mode, verbose=verbose)
 aomap.append_asterism_dust(config, mode=mode, verbose=verbose)
 aomap.append_asterism_counts(config, mode=mode, verbose=verbose)

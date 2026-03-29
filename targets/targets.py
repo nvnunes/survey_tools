@@ -300,8 +300,8 @@ def append_details(options, galaxies, log_sfr=False, skip_catalog=False):
         lines.sky_rate       = np.full((len(galaxies), len(lines.names)), np.nan)
         lines.reject         = np.zeros((len(galaxies), len(lines.names)), dtype=np.bool)
 
-        sky_transmission_data = sky.load_transmission_data(options['location'], options['airmass'])
-        sky_background_data = sky.load_background_data(options['location'], options['airmass'])
+        sky_transmission_data = sky.load_transmission_data_hi_old(options['location'], options['airmass'])
+        sky_background_data = sky.load_background_data_hi_old(options['location'], options['airmass'])
 
         # Sort lines so that Ha comes before NIIa, NIIb but after all other lines
         sorted_indices = np.concatenate((
@@ -457,9 +457,9 @@ def append_details(options, galaxies, log_sfr=False, skip_catalog=False):
             lines.ph_energy[:,i] = 6.626e-27 * 2.998e10 / (lines.wavelength_atm[:,i]/1e8) # erg
             lines.ph_rate[:,i] = lines.sb[:,i] / lines.ph_energy[:,i] / (lines.fwhm[:,i]/10) * 100**2  # ph/s/arcsec^2/nm/m^2
 
-            lines.transmission[:,i] = sky.get_mean_transmission(sky_transmission_data, lines.wavelength_atm[:,i], lines.fwhm[:,i], options['resolving_power'], options['trans_multiple'])
-            lines.sky_rate[:,i] = sky.get_background(sky_background_data, lines.wavelength_atm[:,i], [lines.wavelength_atm[:,i] - lines.fwhm[:,i]*10, lines.wavelength_atm[:,i] + lines.fwhm[:,i]*10], options['resolving_power'])
-            lines.reject[:,i] = sky.reject_emission_line(sky_background_data, sky_transmission_data, lines.wavelength_atm[:,i], lines.fwhm[:,i], options['resolving_power'], options['wavelength_ranges'], options['trans_minimum'], options['trans_multiple'], options['avoid_multiple'], options['min_photon_rate'])
+            lines.transmission[:,i] = sky.get_mean_transmission(sky_transmission_data, lines.wavelength_atm[:,i], lines.fwhm[:,i], R=options['resolving_power'])
+            lines.sky_rate[:,i] = sky.get_background(sky_background_data, options['resolving_power'], lines.wavelength_atm[:,i], [lines.wavelength_atm[:,i] - lines.fwhm[:,i]*10, lines.wavelength_atm[:,i] + lines.fwhm[:,i]*10])
+            lines.reject[:,i] = sky.reject_emission_line_old(sky_background_data, sky_transmission_data, lines.wavelength_atm[:,i], lines.fwhm[:,i], options['resolving_power'], options['wavelength_ranges'], options['trans_minimum'], options['avoid_multiple'], options['min_photon_rate'])
 
         for i, name in enumerate(lines.names):
             galaxies[f"trans_{name}"] = lines.transmission[:,i]
@@ -772,10 +772,10 @@ def _plot_spectra(galaxy, spectrum, figsize=None, options=None, lines=None, show
         if options is None:
             raise TargetsException('options is required when show_skylines is True')
 
-        sky_background_data = sky.load_background_data(options['location'], options['airmass'])
-        sky_background_data_low_res = sky.get_low_res_background(sky_background_data, [min_wavelength, max_wavelength], options['resolving_power'])
+        sky_background_data = sky.load_background_data_hi_old(options['location'], options['airmass'])
+        sky_background_data_low_res = sky.get_background_data_lo_old(sky_background_data, options['resolving_power'], [min_wavelength, max_wavelength])
         if sky_background_data_low_res is not None:
-            sky_lines = sky.find_sky_lines(sky_background_data_low_res, options['min_photon_rate'])
+            sky_lines = sky.find_sky_lines_old(sky_background_data_low_res, options['min_photon_rate'])
             if len(sky_lines) > 0:
                 for w in sky_lines['wavelength']:
                     ax1d.axvline(w, color='k', linestyle=':', zorder=1)
@@ -1465,7 +1465,7 @@ def plot_sky_transmission(galaxy, lines, options, line_names=None):
     mid_wavelength = np.mean(lines.wavelength_atm[line_indexes])
     min_wavelength_range = (np.max(lines.wavelength_atm[line_indexes]) - np.min(lines.wavelength_atm[line_indexes])) * 1.2
 
-    sky_transmission_data = sky.load_transmission_data(options['location'], options['airmass'])
+    sky_transmission_data = sky.load_transmission_data_hi_old(options['location'], options['airmass'])
 
     plot_dwavelength = max(min_wavelength_range, mid_wavelength/options['resolving_power']*8)
     plot_xrange = np.round(np.array([mid_wavelength - plot_dwavelength, mid_wavelength + plot_dwavelength])/10, 0)*10
@@ -1511,15 +1511,15 @@ def plot_sky_background(galaxy, lines, options, line_names=None):
     mid_wavelength = np.mean(lines.wavelength_atm[line_indexes])
     min_wavelength_range = (np.max(lines.wavelength_atm[line_indexes]) - np.min(lines.wavelength_atm[line_indexes])) * 1.2
 
-    sky_background_data = sky.load_background_data(options['location'], options['airmass'])
+    sky_background_data = sky.load_background_data_hi_old(options['location'], options['airmass'])
 
     plot_dwavelength = max(min_wavelength_range, mid_wavelength/options['resolving_power']*8)
     plot_xrange = np.round(np.array([mid_wavelength - plot_dwavelength, mid_wavelength + plot_dwavelength])/10, 0)*10
     plot_yrange = [1e-2, 1e4]
 
     sky_wavelengths = np.linspace(plot_xrange[0], plot_xrange[1], 1000)
-    sky_background_data_low_res = sky.get_low_res_background(sky_background_data, plot_xrange, options['resolving_power'])
-    sky_lines = sky.find_sky_lines(sky_background_data_low_res, options['min_photon_rate'])
+    sky_background_data_low_res = sky.get_background_data_lo_old(sky_background_data, options['resolving_power'], plot_xrange)
+    sky_lines = sky.find_sky_lines_old(sky_background_data_low_res, options['min_photon_rate'])
 
     _, ax = plot.create_plot(title=f"{options['location']} Sky Background")
     ax.plot(sky_background_data_low_res['wavelength'], sky_background_data_low_res['emission'], linestyle='-', color='b', linewidth=1)

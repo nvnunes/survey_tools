@@ -4,84 +4,174 @@
 # pylint: disable=too-few-public-methods,too-many-public-methods,too-many-instance-attributes,attribute-defined-outside-init
 # pylint: disable=invalid-name,too-many-arguments,too-many-locals,too-many-statements,too-many-branches
 
+import argparse
 import os
+import time
+import astropy.units as u
 import numpy as np
 import aomap
-from astropy.table import vstack
-from survey_tools import catalog, healpix
+from astropy.table import Table, vstack
+from survey_tools import asterism, healpix
+from survey_tools._optional_ao_tools import get_training_module
+from survey_tools.utility.table import has_field
 
-force_rebuild = False
+parser = argparse.ArgumentParser(description="Export asterisms for AO map.")
+parser.add_argument('--output-path', type=str, default='../output', help='Output directory path')
+parser.add_argument('--mk', action='store_true', help='Export only declinations suited to Mauna Kea')
+parser.add_argument('--survey', type=str, default=None, help='Survey name to export')
+parser.add_argument('--rebuild', action='store_true', help='Rebuild output files')
+parser.add_argument('--skip_ao', action='store_true', help="Skip adding AO predicted AO performance")
+parser.add_argument('--batch_size', type=int, default=10000, help='Batch size for predicting AO performance')
+parser.add_argument('--skip_backup', action='store_true', help='Skip backup of existing file before adding AO performance')
+args = parser.parse_args()
+
+output_path = args.output_path
+limit_dec = args.mk
+survey = args.survey
+rebuild = args.rebuild
+skip_ao = args.skip_ao
+batch_size = args.batch_size
+skip_backup = args.skip_backup
+
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
 config = aomap.read_config('config.yaml')
-dec_limit = [-20,60]
+
 map_level = config.outer_level
-survey = 'ews'
-output_path = '../output'
+suffix = ""
+if survey is not None:
+    suffix += f"-{survey}"
+if limit_dec:
+    dec_limit = [-20, 60]
+    suffix += '-mk'
+else:
+    dec_limit = [-90, 90]
 
-ao_system_names = ['GNAO-Optimal', 'GNAO-Nominal', 'GNAO-Limit']
-
-for ao_system_name in ao_system_names:
-    filename = f"{output_path}/asterisms-{ao_system_name}.fits"
+for ao_system in config.ao_systems:
+    filename = f"{output_path}/asterisms-{ao_system['name']}{suffix}.fits"
+    check_angles = ao_system['rot_range'] is not None and ao_system['rot_step'] is not None
     
-    if not force_rebuild and os.path.isfile(filename):
-        continue
+    if rebuild or not os.path.isfile(filename):
+        print(f"Generating asterism file for: {ao_system['name']}...")
 
-    print(f"Generating asterism file for: {ao_system_name}...")
+        max_map_data = aomap.get_map_data(config, config.max_data_level, f"asterism-count-{ao_system['name']}", survey=survey, dec_limit=dec_limit)
+        survey_pixs = max_map_data.pixs[max_map_data.values > 0]
+        print(f"  Found {len(survey_pixs)} survey pixels.")
 
-    max_map_data = aomap.get_map_data(config, config.max_data_level, f"asterism-count-{ao_system_name}", survey=survey, dec_limit=dec_limit)
-    survey_pixs = max_map_data.pixs[max_map_data.values > 0]
-    print(f"  Found {len(survey_pixs)} survey pixels.")
+        all_asterisms = []
+        outer_pixs = np.unique(healpix.get_parent_pixel(config.max_data_level, survey_pixs, config.outer_level))
+        for i, pix in enumerate(outer_pixs):
+            print(f"  Processing pixel {i} ({pix})...")
+            asterisms = aomap.load_asterisms(config, pix, ao_system['name'], max_dust_extinction=config.max_dust_extinction)
 
-    all_asterisms = []
-    outer_pixs = np.unique(healpix.get_parent_pixel(config.max_data_level, survey_pixs, config.outer_level))
-    for i, pix in enumerate(outer_pixs):
-        print(f"  Processing pixel {i} ({pix})...")
-        asterisms = aomap.load_asterisms(config, pix, ao_system_name, max_dust_extinction=config.max_dust_extinction)
+            max_pixs = healpix.get_parent_pixel(config.inner_level, asterisms['pix'], config.max_data_level)
+            asterisms = asterisms[np.isin(max_pixs, survey_pixs)]
+            if len(asterisms) == 0:
+                continue
 
-        max_pixs = healpix.get_parent_pixel(config.inner_level, asterisms['pix'], config.max_data_level)
-        asterisms = asterisms[np.isin(max_pixs, survey_pixs)]
-        if len(asterisms) == 0:
-            continue
+            asterisms['id'] = asterisms['pix'] # Inner level pixel
+            all_asterisms.append(asterisms)
 
-        asterisms['id'] = asterisms['pix'] # Inner level pixel
-        all_asterisms.append(asterisms)
+        if len(all_asterisms) > 0:
+            asterisms = vstack(all_asterisms)
+            asterisms.remove_column('pix')
+            asterisms.remove_column('radius')
+            asterisms.remove_column('area')
+            asterisms.remove_column('relarea')
+            asterisms.remove_column('separation')
+            asterisms.remove_column('relsep')
 
-    if all_asterisms:
-        combined_asterisms = vstack(all_asterisms)
-        combined_asterisms.remove_column('pix')
-        combined_asterisms.remove_column('radius')
-        combined_asterisms.remove_column('area')
-        combined_asterisms.remove_column('relarea')
-        combined_asterisms.remove_column('separation')
-        combined_asterisms.remove_column('relsep')
+            asterisms.write(filename, format="fits", overwrite=True)
+            print(f"  Wrote {len(asterisms)} asterisms to {filename}.")
+        else:
+            print('  No asterisms found.')
 
-        combined_asterisms.write(filename, format="fits", overwrite=True)
-        print(f"  Wrote {len(combined_asterisms)} asterisms to {filename}.")
-    else:
-        print('  No asterisms found.')
+    if not skip_ao:
+        training = get_training_module()
 
-# Generate sample target catalog from 3D-HST
-catalog_name = '3D-HST'
-field_names  = ['AEGIS', 'COSMOS', 'GOODS-N', 'GOODS-S', 'UDS']
-filter_name  = 'F160W'  # F125W, F140W, F160W
-rows_per_field = 1000
+        if 'asterisms' not in locals():
+            asterisms = Table.read(filename)
+        
+        if rebuild or not has_field(asterisms, 'SR_mean'):
+            Y_min = np.zeros((len(asterisms), 3))
+            Y_mean = np.zeros((len(asterisms), 3))
+            Y_max = np.zeros((len(asterisms), 3))
 
-targets = []
-for i in range(len(field_names)):
-    catalog_params = catalog.get_params(catalog_name, field_names[i], filter_name)
-    catalog_data = catalog.CatalogData(catalog_params)
-    galaxy_data = catalog.flatten_galaxy_data(catalog_data)
+            for num_stars in range(ao_system['min_wfs'], ao_system['max_wfs'] + 1):
+                key = f"{num_stars}star"
+                indexes = np.flatnonzero(asterisms['num_stars'] == num_stars)
+                num_asterisms = len(indexes)
+                if num_asterisms > 0 and key in ao_system['models']:
+                    model_name = ao_system['point_models'][key]
+                    print(f"Processing {num_stars} stars with {model_name}...")
+                    model = training.load_model('../data/models', model_name)
 
-    random_indices = np.random.choice(len(galaxy_data), rows_per_field, replace=False)
-    galaxy_data = galaxy_data[random_indices]
+                    data = {
+                        'wavelength': 1.654 * u.micron, # H-band
+                        'lgs': ao_system['lgs'],
+                        'r': model['data_options']['r'],
+                        'theta': model['data_options']['theta']
+                    }
 
-    galaxy_data['field'] = field_names[i]
-    selected_columns = ['field', 'phot_id', 'ra', 'dec', 'z_best', 'lmass', 'lsfr', 'Av']
-    galaxy_data = galaxy_data[selected_columns]
-    galaxy_data.rename_column('phot_id', 'id')
-    galaxy_data.rename_column('z_best', 'z')
-    targets.append(galaxy_data)
+                    for lgs in data['lgs']:
+                        lgs['x'] = lgs['zd'] * np.cos(np.deg2rad(lgs['az']))
+                        lgs['y'] = lgs['zd'] * np.sin(np.deg2rad(lgs['az']))
 
-targets = vstack(targets)
-filename = f"{output_path}/sample-targets.fits"
-targets.write(filename, format="fits", overwrite=True)
-print(f"Wrote {len(targets)} sample targets to {filename}.")
+                    data['x'] = data['r'] * np.cos(np.deg2rad(data['theta']))
+                    data['y'] = data['r'] * np.sin(np.deg2rad(data['theta']))
+
+                    num_batches = int(np.ceil(num_asterisms/batch_size))
+                    for batch in range(num_batches):
+                        current_time = time.strftime("%H:%M:%S", time.localtime())
+                        print(f"\r  {current_time}: {batch + 1}/{num_batches}          ", end='', flush=True)
+
+                        start_idx = batch * batch_size
+                        end_idx = min((batch + 1) * batch_size, num_asterisms)
+                        if start_idx >= end_idx:
+                            continue
+                        batch_indexes = indexes[start_idx:end_idx]
+                        N = len(batch_indexes)
+                        M = len(model['data_options']['r'])
+
+                        data['ngs'] = asterism.get_ngs_from_asterisms(asterisms[batch_indexes])
+
+                        X = training.get_model_X(data)
+                        if check_angles:
+                            best_angle = asterisms['best_angle'][batch_indexes]
+                            if np.ma.is_masked(best_angle):
+                                best_angle = np.ma.filled(best_angle, 0)
+                            best_angle = np.repeat(best_angle, M).reshape(-1, 1)
+                            theta_idxs = training.get_ngs_theta_indexes(num_stars)
+                            X[:, theta_idxs] += np.deg2rad(best_angle)
+                            X[:, theta_idxs] = training.wrap_angle_rad(X[:, theta_idxs])
+
+                        Y_pred = training.get_prediction(X, model)
+                        Y_pred = Y_pred.reshape(N, M, Y_pred.shape[1])
+
+                        Y_mean[batch_indexes, :] = np.mean(Y_pred, axis=1)
+                        Y_min[batch_indexes, :] = np.min(Y_pred, axis=1)
+                        Y_max[batch_indexes, :] = np.max(Y_pred, axis=1)
+
+                        training.clear_cache(model)
+
+                    print(f"\n  done\n")
+
+            asterisms['SR_mean'] = Y_mean[:, training.get_sr_index()]
+            asterisms['SR_min'] = Y_min[:, training.get_sr_index()]
+            asterisms['SR_max'] = Y_max[:, training.get_sr_index()]
+
+            ee_size = 100 # mas
+            asterisms[f"EE{ee_size}_mean"] = Y_mean[:, training.get_ee_index()]
+            asterisms[f"EE{ee_size}_min"] = Y_min[:, training.get_ee_index()]
+            asterisms[f"EE{ee_size}_max"] = Y_max[:, training.get_ee_index()]
+
+            asterisms['FWHM_mean'] = Y_mean[:, training.get_fwhm_index()]
+            asterisms['FWHM_min'] = Y_min[:, training.get_fwhm_index()]
+            asterisms['FWHM_max'] = Y_max[:, training.get_fwhm_index()]
+
+            if not skip_backup:
+                if os.path.exists(filename + ".bak"):
+                    os.remove(filename + ".bak")
+                os.rename(filename, filename + ".bak")
+
+            asterisms.write(filename, format="fits", overwrite=True)
+            print(f"  Appended AO performance to {len(asterisms)} asterisms in {filename}.")

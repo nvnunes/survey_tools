@@ -149,6 +149,8 @@ def solve_linear_regression(X, y, sigma = None, excluded = None, options = None)
 
     return details
 
+# TODO: Look at https://linmix.readthedocs.io/en/latest/src/linmix.html
+
 def solve_linear_regression_error_xy(x, y, sigma_x, sigma_y, excluded = None, options = None, coeff0 = None, fix_coeff = None):
     ##############################
     # Parameters                 #

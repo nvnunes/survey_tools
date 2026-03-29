@@ -7,19 +7,23 @@
 # pylint: disable=redefined-builtin
 from os import path
 import pathlib
-import numpy as np
 from astropy.constants import si as constants
-from astropy.convolution import convolve, Gaussian1DKernel
 from astropy.io import ascii
 from astropy.table import Table
 import astropy.units as u
+import numpy as np
+from scipy.interpolate import interp1d
+from scipy.ndimage import gaussian_filter1d
 from scipy.signal import find_peaks, peak_widths # pylint: disable=no-name-in-module
+from scipy.stats import norm 
 
 class StructType:
     pass
 
 class AtmosphereException(Exception):
     pass
+
+FWHM2SIGMA = 1.0 / (2 * np.sqrt(2 * np.log(2)))
 
 def get_default_data_path():
     data_path = f"{pathlib.Path(__file__).parent.parent.resolve()}/data/sky"
@@ -50,72 +54,44 @@ def _get_airmass_for_filename(location, airmass):
 
     return airmass
 
-def load_transmission_data(location, airmass, data_path = None):
-    if data_path is None:
-        data_path = get_default_data_path()
+def get_wavelength_unit():
+    return u.nm
 
-    match location:
-        case 'MaunaKea':
-            # From: https://www.gemini.edu/observing/telescopes-and-sites/sites#Transmission
-            #
-            # The infrared spectra of the atmospheric transmission above Mauna Kea that are used
-            # in the Integration Time Calculators have been generated using the ATRAN modelling
-            # software (Lord, S.D. 1992, NASA Technical Memor. 103957) and are presented separately
-            # for the near-IR and mid-IR. Ascii data files of these spectra are available below.
-            #
-            # Column 1: wavelength [micron]
-            # Column 2: transmission [%]
-            transmission_data = ascii.read(f"{data_path}/mk_trans_zm_10_{_get_airmass_for_filename(location, airmass)*10:.0f}.dat", names=['wavelength', 'transmission'])
-            transmission_data['wavelength'] *= 1e4 # micron -> angstrom
-        case 'Paranal':
-            # From: https://www.eso.org/sci/facilities/eelt/science/drm/tech_data/background/
-            #
-            # Column 1: wavelength [um]
-            # Column 2: transmission [%]
-            transmission_data = ascii.read(f"{data_path}/paranal_trans_airm{_get_airmass_for_filename(location, airmass):.2f}_wav00.4-03.0.dat", names=['wavelength', 'transmission'])
-            transmission_data['wavelength'] *= 1e4 # um -> angstrom
-        case _:
-            raise AtmosphereException('Unknown location')
+def get_emission_unit():
+    return u.ph / u.s / u.m**2 / u.arcsec**2 / u.nm
 
-    return transmission_data
+def _set_wvl_unit(wvl, wvl_range, return_unitless=False):
+    wvl_unit = get_wavelength_unit()
 
-def load_background_data(location, airmass, data_path = None):
-    if data_path is None:
-        data_path = get_default_data_path()
+    if wvl is not None:
+        if isinstance(wvl, u.Quantity):
+            if return_unitless:
+                wvl = wvl.to_value(wvl_unit)
+            else:
+                wvl = wvl.to(wvl_unit)
+        else:
+            if not return_unitless:
+                wvl = wvl * wvl_unit
 
-    match location:
-        case 'MaunaKea' | 'Paranal':
-            # From: https://www.gemini.edu/observing/telescopes-and-sites/sites#IRSky
-            #
-            # The files were manufactured starting from the sky transmission files generated
-            # by ATRAN (Lord, S. D., 1992, NASA Technical Memorandum 103957). These files were
-            # subtracted from unity to give an emissivity and then multiplied by a blackbody
-            # function of temperature 273 for Mauna Kea and 280 for Cerro Pachon. To these were
-            # added the OH emission spectrum (available from the European Southern Observatory's
-            # ISAAC web pages) a set of O2 lines near 1.3 microns with estimated strengths based
-            # on observations at Mauna Kea, and the dark sky continuum (in part zodiacal light),
-            # approximated as a 5800K gray body times the atmospheric transmission and scaled to
-            # produce 18.2 mag/arcsec^2 in the H band, as observed on Mauna Kea by
-            # Maihara et al. (1993 PASP, 105, 940).
-            #
-            # Any use of the data in these tables should reference Lord (1992) and acknowledge Gemini Observatory.
-            #
-            # Column 1: wavelength [nm]
-            # Column 2: emission [ph/sec/arcsec^2/nm/m^2]
-            background_data = ascii.read(f"{data_path}/mk_skybg_zm_10_{_get_airmass_for_filename(location, airmass)*10:.0f}_ph.dat", names=['wavelength', 'emission'])
-            background_data['wavelength'] *= 10 # nanometer -> angstrom
-        # case 'Paranal':
-        #     # From: https://www.eso.org/sci/facilities/eelt/science/drm/tech_data/background/
+    if wvl_range is not None:
+        if isinstance(wvl_range, list) and isinstance(wvl_range[0], list) and len(wvl_range[0]) == 3:
+            wvl_range = u.Quantity([u.Quantity(r[1:3]) for r in wvl_range])
+        elif isinstance(wvl_range, u.Quantity):
+            if return_unitless:
+                wvl_range = wvl_range.to_value(wvl_unit)
+            else:
+                wvl_range = wvl_range.to(wvl_unit)
+        else:
+            if isinstance(wvl_range[0], u.Quantity) or isinstance(wvl_range[0][0], u.Quantity):
+                if return_unitless:
+                    wvl_range = u.Quantity(wvl_range).to_value(wvl_unit)
+                else:
+                    wvl_range = u.Quantity(wvl_range).to(wvl_unit)
+            else:
+                if not return_unitless:
+                    wvl_range = np.asarray(wvl_range) * wvl_unit
 
-        #     # Column 1: wavelength [um]
-        #     # Column 2: emission [photons/m2/s/arcsec2]
-        #     sky_background = ascii.read(f"{data_path}/paranal_optical_ir_sky_lines.dat", names=['wavelength', 'emission'])
-        #     sky_background['wavelength'] *= 1e4  # um -> angstrom
-        #     sky_background['emission']   /= (sky_background['wavelength']/10/spectral_resolving_power) # [photons/m2/s/arcsec2] -> [photons/s/nm/m^2/arcsec^2]
-        case _:
-            raise AtmosphereException('Unknown location')
-
-    return background_data
+    return wvl, wvl_range
 
 def get_vacuum_to_air_wavelength(wavelength):
     if isinstance(wavelength, u.Quantity):
@@ -154,97 +130,80 @@ def get_emission_line_rest_wavelengths(skip_close_doublets=False):
 
     return lines
 
-# pylint: disable=unused-argument
-def get_mean_transmission(transmission_data, wavelengths, fwhm, spectral_resolving_power, trans_dLambda_multiple = 0.5):
-    if hasattr(wavelengths, 'shape'):
-        N = wavelengths.size
-        transmission = np.zeros(wavelengths.shape)
+def get_mean_transmission(transmission_data, wvl0, fwhm, truncate_sigma=4.0, is_low=False):
+    orig_shape = np.shape(wvl0)
+    is_scalar = (orig_shape == ())
+
+    wvl0, _ = _set_wvl_unit(wvl0, None, return_unitless=True)                   # () or (K,)
+    fwhm, _ = _set_wvl_unit(fwhm, None, return_unitless=True)                   # () or (K,)
+    wvl0, fwhm = np.broadcast_arrays(np.atleast_1d(wvl0), np.atleast_1d(fwhm))  # (K,), (K,)
+    sigma = fwhm * FWHM2SIGMA                                                   # (K,)
+
+    wvl = transmission_data['wavelength']                                       # (M,)
+    trans = transmission_data['transmission_lo']                                # (M,)
+
+    # Scaled difference matrix
+    delta_wvl = (wvl[None, :] - wvl0[:, None]) / sigma[:, None]                 # (K, M)
+
+    # Truncation mask
+    if truncate_sigma is not None and np.isfinite(truncate_sigma):
+        mask = np.abs(delta_wvl) <= truncate_sigma
     else:
-        N = len(wavelengths)
-        transmission = np.zeros((N))
+        mask = np.ones_like(delta_wvl, dtype=bool)
 
-    for i in np.arange(N):
-        if N == 1:
-            wavelength = wavelengths
-        else:
-            wavelength = wavelengths[i]
+    # Gaussian weights
+    weights = np.exp(-0.5 * delta_wvl**2)
+    weights = np.where(mask, weights, 0.0)
 
-        # Option 1: FWHM of line given dispersion
-        # dwavelength = np.sqrt(np.power(current_wavelength/spectral_resolving_power, 2) + np.power(fwhm, 2))
-        # Option 2: FWHM of peak given spectral resolving power (probably better as this will correspond to the transmission around the peak)
-        dwavelength = wavelength/spectral_resolving_power
-        # Option 3: Weighted by gaussian profile (probably the best option)
+    # Weighted mean
+    num = (weights * trans[None, :]).sum(axis=1)                                # (K,)
+    den = weights.sum(axis=1)                                                   # (K,)
+    mean_trans = np.divide(num, den, out=np.zeros_like(num), where=den > 0.0)
 
-        if wavelength - dwavelength * trans_dLambda_multiple < transmission_data['wavelength'][0] or wavelength + dwavelength * trans_dLambda_multiple > transmission_data['wavelength'][-1]:
-            mean_transmission = 0.0
-        else:
-            data_filter = (transmission_data['wavelength'] >= wavelength - dwavelength * trans_dLambda_multiple) & (transmission_data['wavelength'] <= wavelength + dwavelength * trans_dLambda_multiple)
-            mean_transmission = np.mean(transmission_data['transmission'][data_filter])
-
-        if N == 1:
-            transmission = mean_transmission
-        else:
-            transmission[i] = mean_transmission
-
-    return transmission
-
-def get_low_res_background(background_data, wavelength_range, spectral_resolving_power):
-    bin_size = round(background_data['wavelength'][1] - background_data['wavelength'][0], 3)
-
-    mean_wavelength = np.mean(wavelength_range)
-    mean_dwavelength = mean_wavelength / spectral_resolving_power
-
-    wavelength_filter = (background_data['wavelength'] >= wavelength_range[0] - mean_dwavelength*10) & (background_data['wavelength'] <= wavelength_range[1] + mean_dwavelength*10)
-
-    if np.sum(wavelength_filter) == 0:
-        return None
-
-    wavelengths = background_data['wavelength'][wavelength_filter]
-
-    sigma = mean_dwavelength / 2.35482 # FWHM = 2.35482 * sigma
-    kernel = Gaussian1DKernel(stddev = sigma / bin_size)
-    emission_low_res = convolve(background_data['emission'][wavelength_filter], kernel)
-
-    final_wavelength_filter = (wavelengths >= wavelength_range[0]) & (wavelengths <= wavelength_range[1])
-
-    return Table([
-            wavelengths[final_wavelength_filter],
-            emission_low_res[final_wavelength_filter]
-        ], names=[
-            'wavelength',
-            'emission'
-        ], dtype=[
-            np.float64,
-            np.float64
-        ]
-    )
-
-def get_background(background_data, wavelengths, wavelength_range, spectral_resolving_power):
-    if np.size(wavelengths) == 1:
-        background_low_res = get_low_res_background(background_data, wavelength_range, spectral_resolving_power)
-        if wavelengths <= wavelength_range[0] or wavelengths >= wavelength_range[1]:
-            return 0.0
-        return np.interp(wavelengths, background_low_res['wavelength'], background_low_res['emission'])
+    # Shape-preserving return
+    if is_scalar:
+        return mean_trans.item()
     else:
-        backgrounds = np.full(wavelengths.shape, np.nan)
-        for i in np.arange(len(wavelengths)):
-            backgrounds[i] = get_background(background_data, wavelengths[i], [wavelength_range[0][i], wavelength_range[1][i]], spectral_resolving_power)
-        return backgrounds
+        return mean_trans.reshape(orig_shape)
 
-def find_sky_lines(background_data, min_photo_rate = 10.0):
-    peaks, _ = find_peaks(background_data['emission'], height=min_photo_rate)
-    widths, width_heights, left_ips, right_ips = peak_widths(background_data['emission'], peaks, rel_height=0.5) # FWHM
+def get_background(interp_func, wvl, wvl_range=None):
+    wvl, wvl_range = _set_wvl_unit(wvl, wvl_range)
 
-    lambda0 = background_data['wavelength'][0]
-    bin_size = round(background_data['wavelength'][1] - background_data['wavelength'][0], 3)
+    if wvl_range is not None:
+        backgrounds = np.zeros_like(wvl.value)
+        wvl_filter = (wvl >= wvl_range[0]) & (wvl <= wvl_range[1])
+        backgrounds[wvl_filter] = interp_func(wvl[wvl_filter].to(u.nm).value)
+    else:
+        backgrounds = interp_func(wvl.to(u.nm).value)
+
+    return backgrounds * get_emission_unit()
+
+def find_sky_lines(
+        wvl,
+        emission, 
+        min_photon_rate = 10 * u.photon / u.s / u.m**2 / u.arcsec**2 / u.nm
+):
+    # MIN PHOTON RATE:
+    #
+    # G * eta_sys * dLambda = 5.6e-3 (YJ) 7.3e-3 (JH) 9.2e-3 (HK) arcsec^2 m^2 nm
+    # Thermal floor for GIRMOS is 0.05 e-/s
+    # Flux = Thermal floor / (G * eta_sys * dLambda) = 8.9 (YJ) 6.8 (JH) 5.4 (HK) ph/s/m^2/arcsec^2/nm
+    #
+    peaks, _ = find_peaks(emission, height=min_photon_rate.to_value(emission.unit))
+    widths, width_heights, left_ips, right_ips = peak_widths(emission, peaks, rel_height=0.5) # FWHM
+
+    wvl_start = wvl[0]
+    wvl_step = np.round(wvl[1] - wvl[0], 3)
+    wvl_unit = get_wavelength_unit()
+    emission_unit = get_emission_unit()
 
     sky_lines = Table([
-            background_data['wavelength'][peaks],
-            background_data['emission'][peaks],
-            widths * bin_size,
+            wvl[peaks],
+            emission[peaks],
+            widths * wvl_step,
             width_heights,
-            lambda0 + left_ips * bin_size,
-            lambda0 + right_ips * bin_size
+            wvl_start + left_ips * wvl_step,
+            wvl_start + right_ips * wvl_step
         ], names=[
             'wavelength',
             'emission',
@@ -252,31 +211,206 @@ def find_sky_lines(background_data, min_photo_rate = 10.0):
             'width_height',
             'wavelength_low',
             'wavelength_high'
-        ], dtype=[
-            np.float64,
-            np.float64,
-            np.float64,
-            np.float64,
-            np.float64,
-            np.float64
+        ], units=[
+            wvl_unit,
+            emission_unit,
+            wvl_unit,
+            emission_unit,
+            wvl_unit,
+            wvl_unit
         ]
     )
 
     return sky_lines
 
-def reject_emission_line(background_data, transmission_data, wavelength, fwhm, spectral_resolving_power, allowed_wavelength_range = None, trans_minimum = 1.0, trans_dLambda_multiple = 0.5, avoid_dLambda_multiple = 1.0, min_photon_rate = 10.0):
-    if hasattr(wavelength, 'shape'):
-        N = wavelength.size
-        rejects = np.ones(wavelength.shape, dtype=np.bool)
+#region Deprecate
+
+def load_transmission_data_hi_old(location, airmass, data_path = None):
+    if data_path is None:
+        data_path = get_default_data_path()
+
+    match location:
+        case 'MaunaKea':
+            # From: https://www.gemini.edu/observing/telescopes-and-sites/sites#Transmission
+            #
+            # The infrared spectra of the atmospheric transmission above Mauna Kea that are used
+            # in the Integration Time Calculators have been generated using the ATRAN modelling
+            # software (Lord, S.D. 1992, NASA Technical Memor. 103957) and are presented separately
+            # for the near-IR and mid-IR. Ascii data files of these spectra are available below.
+            #
+            # Column 1: wavelength [micron]
+            # Column 2: transmission [%]
+            transmission_data = ascii.read(f"{data_path}/mk_trans_zm_10_{_get_airmass_for_filename(location, airmass)*10:.0f}.dat", names=['wavelength', 'transmission'])
+            transmission_data['wavelength'] *= 1e3 # micron -> nm
+        case 'Paranal':
+            # From: https://www.eso.org/sci/facilities/eelt/science/drm/tech_data/background/
+            #
+            # Column 1: wavelength [um]
+            # Column 2: transmission [%]
+            transmission_data = ascii.read(f"{data_path}/paranal_trans_airm{_get_airmass_for_filename(location, airmass):.2f}_wav00.4-03.0.dat", names=['wavelength', 'transmission'])
+            transmission_data['wavelength'] *= 1e3 # um -> nm
+        case _:
+            raise AtmosphereException('Unknown location')
+
+    transmission_data['wavelength'].unit = get_wavelength_unit()
+
+    return transmission_data
+
+def load_background_data_hi_old(location, airmass, data_path = None):
+    if data_path is None:
+        data_path = get_default_data_path()
+
+    match location:
+        case 'MaunaKea' | 'Paranal':
+            # From: https://www.gemini.edu/observing/telescopes-and-sites/sites#IRSky
+            #
+            # The files were manufactured starting from the sky transmission files generated
+            # by ATRAN (Lord, S. D., 1992, NASA Technical Memorandum 103957). These files were
+            # subtracted from unity to give an emissivity and then multiplied by a blackbody
+            # function of temperature 273 for Mauna Kea and 280 for Cerro Pachon. To these were
+            # added the OH emission spectrum (available from the European Southern Observatory's
+            # ISAAC web pages) a set of O2 lines near 1.3 microns with estimated strengths based
+            # on observations at Mauna Kea, and the dark sky continuum (in part zodiacal light),
+            # approximated as a 5800K gray body times the atmospheric transmission and scaled to
+            # produce 18.2 mag/arcsec^2 in the H band, as observed on Mauna Kea by
+            # Maihara et al. (1993 PASP, 105, 940).
+            #
+            # Any use of the data in these tables should reference Lord (1992) and acknowledge Gemini Observatory.
+            #
+            # Column 1: wavelength [nm]
+            # Column 2: emission [ph/sec/m^2/arcsec^2/nm]
+            background_data = ascii.read(f"{data_path}/mk_skybg_zm_10_{_get_airmass_for_filename(location, airmass)*10:.0f}_ph.dat", names=['wavelength', 'emission'])
+        # case 'Paranal':
+        #     # From: https://www.eso.org/sci/facilities/eelt/science/drm/tech_data/background/
+
+        #     # Column 1: wavelength [um]
+        #     # Column 2: emission [photons/s/m^2/arcsec^2]
+        #     sky_background = ascii.read(f"{data_path}/paranal_optical_ir_sky_lines.dat", names=['wavelength', 'emission'])
+        #     sky_background['wavelength'] *= 1e3  # um -> nm
+        #     sky_background['emission']   /= (sky_background['wavelength']/10/spectral_resolving_power) # [photons/s/m^2/arcsec^2] -> [photons/s/m^2/arcsec^2/nm]
+        case _:
+            raise AtmosphereException('Unknown location')
+
+    background_data['wavelength'].unit = get_wavelength_unit()
+    background_data['emission'].unit = get_emission_unit()
+
+    return background_data
+
+def _create_interp_func(data, field_name):
+    return interp1d(data['wavelength'], data[field_name], kind='linear', bounds_error=False, fill_value=np.nan)
+
+def _convolve_with_gaussian(R, data_hi, field_name, field_unit=None, wvl_range=None, wvl_mean=None, return_interp=False):
+    _, wvl_range = _set_wvl_unit(None, wvl_range, return_unitless=True)
+
+    wvl = data_hi['wavelength']
+    value_hi = data_hi[field_name]
+
+    wvl_step = np.round(wvl[1] - wvl[0], 3)
+    if wvl_mean is None:
+        wvl_mean = np.mean(wvl_range if wvl_range is not None else wvl)
     else:
-        N = len(wavelength)
+        wvl_mean = wvl_mean.to_value(wvl.unit)
+    dlambda  = wvl_mean / R
+
+    if wvl_range is not None and not return_interp:
+        wvl_filter_wide = (wvl >= wvl_range[0] - dlambda*10) & (wvl <= wvl_range[1] + dlambda*10)
+
+        if np.sum(wvl_filter_wide) == 0:
+            return None
+
+        wvl = wvl[wvl_filter_wide]
+        value_hi = value_hi[wvl_filter_wide]
+
+    sigma = dlambda * FWHM2SIGMA
+    fudge_factor = 1.2 # Compensates for underestimation of total sky background power due to low resolution of input data
+    sigma_bins = sigma / wvl_step / fudge_factor
+    value_lo = gaussian_filter1d(value_hi, sigma_bins, mode='reflect')
+    if field_unit is not None:
+        value_lo *= field_unit
+
+    if wvl_range is not None:
+        wvl_filter_narrow = (wvl >= wvl_range[0]) & (wvl <= wvl_range[1])
+        wvl = wvl[wvl_filter_narrow]
+        value_lo = value_lo[wvl_filter_narrow]
+
+    data_lo = Table([wvl, value_lo], names=['wavelength', field_name], units=[get_wavelength_unit(), field_unit])
+
+    if return_interp:
+        return data_lo, _create_interp_func(data_lo, field_name)
+    else:
+        return data_lo
+
+def get_background_data_lo_old(background_data, R, wvl_range=None, wvl_mean=None, return_interp=False):
+    return _convolve_with_gaussian(R, background_data, "emission", field_unit=get_emission_unit(), wvl_range=wvl_range, wvl_mean=wvl_mean, return_interp=return_interp)
+
+def find_sky_lines_old(
+        background_data, 
+        min_photon_rate=10.0 # ph/sec/m^2/arcsec^2/nm
+):
+    # MIN PHOTON RATE:
+    #
+    # G * eta_sys * dLambda = 5.6e-3 (YJ) 7.3e-3 (JH) 9.2e-3 (HK) arcsec^2 m^2 nm
+    # Thermal floor for GIRMOS is 0.05 e-/s
+    # Flux = Rate / (G * eta_sys * dLambda) = 8.9 (YJ) 6.8 (JH) 5.4 (HK) ph/s/m^2/arcsec^2/nm
+    #
+
+    peaks, _ = find_peaks(background_data['emission'], height=min_photon_rate)
+    widths, width_heights, left_ips, right_ips = peak_widths(background_data['emission'], peaks, rel_height=0.5) # FWHM
+
+    wvl_start = background_data['wavelength'][0]
+    wvl_step = np.round(background_data['wavelength'][1] - background_data['wavelength'][0], 3)
+    wvl_unit = get_wavelength_unit()
+    emission_unit = get_emission_unit()
+
+    sky_lines = Table([
+            background_data['wavelength'][peaks],
+            background_data['emission'][peaks],
+            widths * wvl_step,
+            width_heights,
+            wvl_start + left_ips * wvl_step,
+            wvl_start + right_ips * wvl_step
+        ], names=[
+            'wavelength',
+            'emission',
+            'width',
+            'width_height',
+            'wavelength_low',
+            'wavelength_high'
+        ], units=[
+            wvl_unit,
+            emission_unit,
+            wvl_unit,
+            emission_unit,
+            wvl_unit,
+            wvl_unit
+        ]
+    )
+
+    return sky_lines
+
+def reject_emission_line_old(
+        background_data,
+        transmission_data,
+        wvl,
+        fwhm,
+        R,
+        allowed_wavelength_range = None,
+        trans_minimum = 1.0,
+        avoid_dLambda_multiple = 1.0,
+        min_photon_rate = 10.0 # ph/sec/m^2/arcsec^2/nm
+):
+    if hasattr(wvl, 'shape'):
+        N = wvl.size
+        rejects = np.ones(wvl.shape, dtype=np.bool)
+    else:
+        N = len(wvl)
         rejects = np.ones((N), dtype=np.bool)
 
     for i in np.arange(N):
         if N == 1:
-            current_wavelength = wavelength
+            current_wavelength = wvl
         else:
-            current_wavelength = wavelength[i]
+            current_wavelength = wvl[i]
 
         if np.size(fwhm) == 1:
             current_fwhm = fwhm
@@ -288,9 +422,9 @@ def reject_emission_line(background_data, transmission_data, wavelength, fwhm, s
         if current_wavelength == 0:
             reject = True
         else:
-            dwavelength = np.sqrt(np.power(current_wavelength/spectral_resolving_power,2) + np.power(current_fwhm,2))
+            dwavelength = np.sqrt(np.power(current_wavelength/R,2) + np.power(current_fwhm,2))
             wavelength_range = current_wavelength + 10*dwavelength*np.array([-0.5, 0.5])
-            trans = get_mean_transmission(transmission_data, current_wavelength, current_fwhm, spectral_resolving_power, trans_dLambda_multiple)
+            trans = get_mean_transmission(transmission_data, current_wavelength, current_fwhm, R=R)
 
             if trans < trans_minimum:
                 reject = True
@@ -307,11 +441,14 @@ def reject_emission_line(background_data, transmission_data, wavelength, fwhm, s
                             reject = False
                             break
 
-            if not reject and (wavelength_range[0] < background_data['wavelength'][0] or wavelength_range[1] > background_data['wavelength'][-1]):
-                reject = True
+            if not reject:
+                wvl_start = background_data['wavelength'].quantity[0]
+                wvl_end   = background_data['wavelength'].quantity[-1]
+                if wavelength_range[0] < wvl_start or wavelength_range[1] > wvl_end:
+                    reject = True
 
             if not reject:
-                background_low_res = get_low_res_background(background_data, wavelength_range, spectral_resolving_power)
+                background_low_res = get_background_data_lo(background_data, R, wavelength_range)
                 sky_lines = find_sky_lines(background_low_res, min_photon_rate)
 
                 line_wavelength_low  = current_wavelength - dwavelength * avoid_dLambda_multiple
@@ -324,3 +461,5 @@ def reject_emission_line(background_data, transmission_data, wavelength, fwhm, s
             rejects[i] = reject
 
     return rejects
+
+#endregion

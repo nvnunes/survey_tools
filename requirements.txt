@@ -15,3 +15,5 @@ dust_extinction
 dustmaps
 mocpy
 shapely
+reproject
+vorbin

@@ -21,6 +21,13 @@ from survey_tools.utility.rotator import Rotator
 class HealpixException(Exception):
     pass
 
+class WrappedFormatterHMS(angle_helper.FormatterHMS):
+    def __init__(self, longitude_ticks):
+        self._formatter = skyproj.mpl_utils.WrappedFormatterDMS(180, longitude_ticks)
+
+    def __call__(self, direction, factor, values):
+        return super().__call__(direction, factor, self._formatter._wrap_values(factor, values))
+
 def _get_nside(level):
     return 2**level
 
@@ -245,9 +252,10 @@ def plot(values, level=None, pixs=None, skycoords=None, contour_values=None, plo
         if plot_properties.get('milkyway', False):
             sp.draw_milky_way(
                 width=plot_properties['milkyway_width'] if plot_properties.get('milkyway_width', None) is not None else 10,
-                linewidth=1.5,
+                linewidth=1.2,
                 color=plot_properties['colors']['milkyway'],
-                linestyle='-'
+                alpha=plot_properties['alphas']['milkyway'],
+                linestyle='-',
             )
 
         if plot_properties.get('ecliptic', False):
@@ -255,8 +263,9 @@ def plot(values, level=None, pixs=None, skycoords=None, contour_values=None, plo
                 sp = plot_properties['sp'],
                 galactic=plot_properties['galactic'],
                 width=plot_properties['ecliptic_width'] if plot_properties.get('ecliptic_width', None) is not None else 10,
-                linewidth=1.5,
+                linewidth=1.2,
                 color=plot_properties['colors']['ecliptic'],
+                alpha=plot_properties['alphas']['ecliptic'],
                 linestyle='-'
             )
 
@@ -413,6 +422,19 @@ def _set_default_plot_properties(values, contour_values, plot_properties=None):
     else:
         plot_properties['colors'] = color_defaults
 
+    # Alphas
+    alpha_defaults = {
+        'grid': 1.0,
+        'boundaries': 1.0,
+        'milkyway': 1.0,
+        'ecliptic': 1.0
+    }
+
+    if 'alphas' in plot_properties and plot_properties['alphas'] is not None:
+        plot_properties['alphas'] = _update_dictionary(alpha_defaults,  plot_properties['alphas'])
+    else:
+        plot_properties['alphas'] = alpha_defaults
+
     # Fonts
     fontsize_defaults = {
         'xlabel': 12,
@@ -423,7 +445,9 @@ def _set_default_plot_properties(values, contour_values, plot_properties=None):
         'cbar_label': 12,
         'cbar_tick_label': 10,
         'boundaries_label': 10,
-        'boundaries_label_small': max(8, 12.0-(plot_properties.get('boundaries_level') or 0)/2.0)
+        'boundaries_label_small': max(8, 12.0-(plot_properties.get('boundaries_level') or 0)/2.0),
+        'points_label': 8,
+        'stars_legend': 10
     }
 
     if 'fontsize' in plot_properties and plot_properties['fontsize'] is not None:
@@ -498,6 +522,12 @@ def _set_default_plot_properties(values, contour_values, plot_properties=None):
     if plot_properties.get('points', None) is not None:
         if isinstance(plot_properties['points'], list) and not all(isinstance(i, list) for i in plot_properties['points']):
             plot_properties['points'] = [plot_properties['points']]
+
+    # Other
+    if plot_properties.get('hide_title', None) is None:
+        plot_properties['hide_title'] = False
+    if plot_properties.get('hide_cbar', None) is None:
+        plot_properties['hide_cbar'] = False
 
     return plot_properties
 
@@ -659,6 +689,7 @@ def _draw_grid(
         grid=True,
         grid_longitude=None,
         colors=None,
+        alphas=None,
         **kwargs # pylint: disable=unused-argument
 ):
     if not hasattr(ax, 'gridlines'): # skyproj 1.x
@@ -684,6 +715,7 @@ def _draw_grid(
         return
 
     gridlines.set_edgecolor(colors['grid'])
+    gridlines.set_alpha(alphas['grid'])
 
     # The following is a HACK to add support for:
     # 1. Longitude in Hours instead of Degrees
@@ -704,15 +736,8 @@ def _draw_grid(
 
     match grid_longitude:
         case 'hours':
-            class WrappedFormatterHMS(angle_helper.FormatterHMS):
-                def __init__(self):
-                    self._formatter = skyproj.mpl_utils.WrappedFormatterDMS(180, sp._longitude_ticks) # pylint: disable=protected-access
-
-                def __call__(self, direction, factor, values):
-                    return super().__call__(direction, factor, self._formatter._wrap_values(factor, values))
-
             lon_locator = angle_helper.LocatorHMS(n_grid_lon, include_last=zoom)
-            lon_formatter = WrappedFormatterHMS()
+            lon_formatter = WrappedFormatterHMS(sp._longitude_ticks) # pylint: disable=protected-access
         case _:
             lon_locator = angle_helper.LocatorDMS(n_grid_lon, include_last=zoom)
             lon_formatter = None
@@ -746,6 +771,7 @@ def _draw_boundaries(
         boundaries_level=None,
         boundaries_pixs=None,
         colors=None,
+        alphas=None,
         fontsize=None,
         **kwargs # pylint: disable=unused-argument
 ):
@@ -799,7 +825,7 @@ def _draw_boundaries(
             plt.clf()
             raise HealpixException('Too many boundaries to plot')
 
-        sp.draw_polygon(lon=vertices[:,0], lat=vertices[:,1], edgecolor=colors['boundaries'])
+        sp.draw_polygon(lon=vertices[:,0], lat=vertices[:,1], edgecolor=colors['boundaries'], alpha=alphas['boundaries'])
 
         if boundaries_pixs is not None and pix not in boundaries_pixs:
             continue
@@ -848,6 +874,7 @@ def _draw_surveys(
         sp = None,
         surveys = None,
         galactic=False,
+        fontsize=None,
         **kwargs # pylint: disable=unused-argument
     ):
 
@@ -884,6 +911,25 @@ def _draw_surveys(
 
             sp.draw_polygon(lon, lat, **styles)
 
+            if len(survey) > 2:
+                label = survey[2]
+                center_lon = np.mean(lon)
+                center_lat = np.mean(lat)
+
+                if len(survey) > 3 and isinstance(survey[3], (set, list)) and len(survey[3]) == 2:
+                    x_offset = survey[3][0]
+                    y_offset = survey[3][1]
+                else:
+                    x_offset = 0.0
+                    y_offset = 0.0
+
+                if len(survey) > 4 and isinstance(survey[4], dict):
+                    text_styles = survey[4]
+                else:
+                    text_styles = {}
+
+                plt.text(center_lon + x_offset, center_lat + y_offset, label, color=styles['edgecolor'], fontsize=fontsize['points_label'], fontweight='bold', ha='center', va='center', **text_styles)
+
 def _draw_lines(
         lines=None,
         **kwargs # pylint: disable=unused-argument
@@ -917,6 +963,7 @@ def _draw_points(
         points=None,
         galactic=False,
         zoom=False,
+        fontsize=None,
         **kwargs # pylint: disable=unused-argument
     ):
 
@@ -945,6 +992,11 @@ def _draw_points(
             points_ra_dec = points_ra_dec[:, 0:2].astype(float)
         else:
             labels = None
+
+        if len(p) > 2 and isinstance(p[2], dict):
+            text_styles = p[2]
+        else:
+            text_styles = {}
 
         if zoom:
             [xlim, ylim] = np.sort(sp.crs.transform_points(ax.get_xlim(), ax.get_ylim(), inverse=True).transpose())
@@ -993,12 +1045,12 @@ def _draw_points(
             plt.scatter(points_icrs.galactic.l.degree, points_icrs.galactic.b.degree, **scatter_options)
             if labels is not None:
                 for i, label in enumerate(labels):
-                    plt.text(points_icrs.galactic.l.degree[i]+label_space, points_icrs.galactic.b.degree[i], label, color=label_color, fontsize=8, ha='right')
+                    plt.text(points_icrs.galactic.l.degree[i]+label_space, points_icrs.galactic.b.degree[i], label, color=label_color, fontsize=fontsize['points_label'], fontweight='bold', ha='right', **text_styles)
         else:
             plt.scatter(points_ra_dec[:,0], points_ra_dec[:,1], **scatter_options)
             if labels is not None:
                 for i, label in enumerate(labels):
-                    plt.text(points_ra_dec[i, 0]+label_space, points_ra_dec[i, 1], label, color=label_color, fontsize=8, ha='right')
+                    plt.text(points_ra_dec[i, 0]+label_space, points_ra_dec[i, 1], label, color=label_color, fontsize=fontsize['points_label'], fontweight='bold', ha='right', **text_styles)
 
 def _draw_stars(
         sp=None,
@@ -1006,6 +1058,7 @@ def _draw_stars(
         stars=None,
         galactic=False,
         zoom=False,
+        fontsize=None,
         **kwargs # pylint: disable=unused-argument
     ):
 
@@ -1066,7 +1119,7 @@ def _draw_stars(
             label = f"{mag}"
         legend_elements.append(plt.scatter([], [], label=label, **scatter_options))
 
-    ax.legend(handles=legend_elements, loc='upper right', title="Star Mag", frameon=True, edgecolor='black')
+    ax.legend(handles=legend_elements, loc='upper right', title="Star Mag", frameon=True, edgecolor='black', fontsize=fontsize['stars_legend'], title_fontsize=fontsize['stars_legend'])
 
     relative_sizes = (max_mag - np.maximum(min_mag, np.minimum(max_mag, stars[band]))) / (max_mag - min_mag)
     scatter_options['s'] = min_size + (max_size - min_size) * relative_sizes
@@ -1190,6 +1243,7 @@ def _draw_cbar(
         cbar_shrink=0.6,
         cbar_unit='',
         fontsize=None,
+        hide_cbar=False,
         **kwargs # pylint: disable=unused-argument
     ):
 
@@ -1210,6 +1264,12 @@ def _draw_cbar(
 
     cb.set_label(label=cbar_unit, fontsize=fontsize['cbar_label'])
 
+    # Adding the cbar affects the plot, so we cannot skip the above.
+    # Instead we remove it afterwards if needed.
+    if hide_cbar:
+        cb.remove()
+        cb = None
+
     return cb
 
 def _finish_plot(
@@ -1219,9 +1279,10 @@ def _finish_plot(
     xlabel=None,
     ylabel=None,
     fontsize=None,
+    hide_title=False,
     **kwargs # pylint: disable=unused-argument
 ):
-    if title is not None:
+    if not hide_title and title is not None:
         title_pad = 25 if projection not in GLOBE_PROJECTIONS else 10
         ax.set_title(title, pad=title_pad, fontsize=fontsize['title'])
 

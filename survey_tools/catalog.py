@@ -97,30 +97,30 @@ def get_params(catalog_name, field_name = None, filter_name = None):
                     case _:
                         catalog_params.field_version = 4.1
 
-        if filter_name is not None:
-            catalog_params.catalog_image_epoch = None
+    if filter_name is not None:
+        catalog_params.catalog_image_epoch = None
 
-            match catalog_name:
-                case 'UVISTA' | 'UVISTA-PLUS':
-                    catalog_params.catalog_image_folder = f"{catalog_params.catalog_image_path}/UVISTA"
-                    match filter_name:
-                        case 'Y':
-                            catalog_params.catalog_image_file = 'UVISTA_Y_12_01_24_allpaw_skysub_015_dr6_rc_v1.fits'
-                        case 'J':
-                            catalog_params.catalog_image_file = 'UVISTA_J_12_01_24_allpaw_skysub_015_dr6_rc_v1.fits'
-                        case 'H':
-                            catalog_params.catalog_image_file = 'UVISTA_H_12_01_24_allpaw_skysub_015_dr6_rc_v1.fits'
-                        case ['K', 'Ks']:
-                            catalog_params.catalog_image_file = 'UVISTA_Ks_12_01_24_allpaw_skysub_015_dr6_rc_v1.fits'
-                        case 'NB118':
-                            catalog_params.catalog_image_file = 'UVISTA_NB118_12_01_24_allpaw_skysub_015_dr6_rc_v1.fits'
-                    catalog_params.catalog_image_epoch = 2016.34
-                case '3D-HST' | '3D-HST-PLUS':
-                    catalog_params.catalog_image_folder = f"{catalog_params.catalog_image_path}/3D-HST"
-                    catalog_params.catalog_image_file = f"{catalog_params.field_file_prefix}_3dhst.v4.0.{filter_name}_orig_sci.fits"
+        match catalog_name:
+            case 'UVISTA' | 'UVISTA-PLUS':
+                catalog_params.catalog_image_folder = f"{catalog_params.catalog_image_path}/UVISTA"
+                match filter_name:
+                    case 'Y':
+                        catalog_params.catalog_image_file = 'UVISTA_Y_12_01_24_allpaw_skysub_015_dr6_rc_v1.fits'
+                    case 'J':
+                        catalog_params.catalog_image_file = 'UVISTA_J_12_01_24_allpaw_skysub_015_dr6_rc_v1.fits'
+                    case 'H':
+                        catalog_params.catalog_image_file = 'UVISTA_H_12_01_24_allpaw_skysub_015_dr6_rc_v1.fits'
+                    case 'K' | 'Ks':
+                        catalog_params.catalog_image_file = 'UVISTA_Ks_12_01_24_allpaw_skysub_015_dr6_rc_v1.fits'
+                    case 'NB118':
+                        catalog_params.catalog_image_file = 'UVISTA_NB118_12_01_24_allpaw_skysub_015_dr6_rc_v1.fits'
+                catalog_params.catalog_image_epoch = 2016.34
+            case '3D-HST' | '3D-HST-PLUS':
+                catalog_params.catalog_image_folder = f"{catalog_params.catalog_image_path}/3D-HST"
+                catalog_params.catalog_image_file = f"{catalog_params.field_file_prefix}_3dhst.v4.0.{filter_name}_orig_sci.fits"
 
-            if table.has_field(catalog_params, 'catalog_image_file'):
-                catalog_params.catalog_image_path = f"{catalog_params.catalog_image_folder}/{catalog_params.catalog_image_file}"
+        if table.has_field(catalog_params, 'catalog_image_file'):
+            catalog_params.catalog_image_path = f"{catalog_params.catalog_image_folder}/{catalog_params.catalog_image_file}"
 
     # Other Parameters
     catalog_params.max_star_mag = 22.0  # catalog mag (to reduce number of cross-matches performed)
@@ -487,8 +487,9 @@ class CatalogData:
 
                 self.sources = vstack([self.sources12, self.sources3])
 
-                source_filter = np.char.startswith(self.sources['ID'], self.field)
-                self.sources = self.sources[source_filter]
+                if self.field is not None:
+                    source_filter = np.char.startswith(self.sources['ID'], self.field)
+                    self.sources = self.sources[source_filter]
 
                 table.add_fields(self.sources, 'index', np.arange(len(self.sources))+1)
 
@@ -569,7 +570,7 @@ class CatalogData:
                 self.params = catalog_params
                 self.source = '3DHSTP'
 
-        if not table.has_field(self, 'count'):
+        if not table.has_field(self, 'count') or self.count == 0:
             self.count = len(self.sources)
         if not table.has_field(self, 'all_sources'):
             self.all_sources = [self.source]
@@ -707,22 +708,26 @@ def get_x_field(catalog_data_or_params):
     match catalog_data_or_params.catalog:
         case 'UVISTA' | 'UVISTA-PLUS':
             return 'xpix'
-        case _:
+        case '3D-HST' | '3D-HST-PLUS':
             return 'x'
+        case _:
+            return None
 
 def get_y_field(catalog_data_or_params):
     match catalog_data_or_params.catalog:
         case 'UVISTA' | 'UVISTA-PLUS':
             return 'ypix'
-        case _:
+        case '3D-HST' | '3D-HST-PLUS':
             return 'y'
+        case _:
+            return None
 
 #endregion
 
 #region Flag Info
 
 def get_use_phot_sources():
-    return np.array(['UVISTA','3DHST','KMOS3D','DESI'])
+    return np.array(['UVISTA','3DHST'])
 
 def get_use_phot_field(catalog_data_or_params):
     match catalog_data_or_params.catalog:
@@ -730,8 +735,6 @@ def get_use_phot_field(catalog_data_or_params):
             return 'USE'
         case '3D-HST':
             return 'use_phot'
-        case 'KMOS3D' | 'DESI':
-            return True
     return None
 
 def get_has_use_phot(catalog_data):
@@ -1437,7 +1440,10 @@ def get_spp(catalog_data, idx_or_filter = None, suffix = None):
         elif not table.has_field(spp_table, field_names[2]) and field_names[2] == 'Av' and table.has_field(spp_table, 'av'):
             field_names[2] = 'av'
     else:
-        spp_table = catalog_data.spp
+        if table.has_field(catalog_data, 'spp'):
+            spp_table = catalog_data.spp
+        else:
+            return None, None, None
 
     if suffix is not None:
         for i in np.arange(len(field_names)):
@@ -1749,7 +1755,10 @@ def get_lines(catalog_data, idx_or_filter = None, suffix = None):
     if (catalog_data.catalog == 'UVISTA-PLUS' or catalog_data.catalog == '3D-HST-PLUS') and suffix is None:
         lines_table = catalog_data.best
     else:
-        lines_table = catalog_data.lines
+        if table.has_field(catalog_data, 'lines'):
+            lines_table = catalog_data.lines
+        else:
+            return None, None, None
 
     if suffix is not None:
         for i in np.arange(num_lines):
@@ -1984,9 +1993,10 @@ def consolidate_best_data(catalog_data):
             if z_best_flag[i] < 8 and is_inconsistent:
                 z_best_flag[i] = 8
 
-    table.add_fields(catalog_data.best, 'z_best', z_best)
-    table.add_fields(catalog_data.best, 'z_best_flag', z_best_flag)
-    table.add_fields(catalog_data.best, 'z_best_source', z_best_source)
+    if np.size(z_best) > 0:
+        table.add_fields(catalog_data.best, 'z_best', z_best)
+        table.add_fields(catalog_data.best, 'z_best_flag', z_best_flag)
+        table.add_fields(catalog_data.best, 'z_best_source', z_best_source)
 
     # Step 2: Consolidate use_phot
     if get_has_use_phot(catalog_data):
@@ -2065,7 +2075,7 @@ def consolidate_best_data(catalog_data):
         spp_date_best = catalog_data.date
 
         for i in np.arange(len(spp_sources)):
-            if spp_sources[i] == catalog_data.source:
+            if spp_sources[i] in catalog_data.source:
                 continue
 
             tmp_spp, tmp_spp_flags, _ = get_spp(catalog_data, suffix=spp_sources[i])
@@ -2240,7 +2250,7 @@ def save_matched_catalog(catalog_data, new_catalog_params, save_format='ascii', 
 #region Flatten
 
 def flatten_galaxy_data(catalog_data):
-    if catalog_data.catalog != '3D-HST' and not table.has_field(catalog_data, 'best'):
+    if catalog_data.catalog not in ['3D-HST', '3D-HST-PLUS', 'UVISTA-PLUS']:
         raise CatalogException('Catalog does not support flattening')
 
     if catalog_data.catalog == '3D-HST':
@@ -2255,8 +2265,9 @@ def flatten_galaxy_data(catalog_data):
     source_id = catalog_data.sources[get_id_field(catalog_data)][galaxy_filter]
     ra = catalog_data.sources[get_ra_field(catalog_data)][galaxy_filter]
     dec = catalog_data.sources[get_dec_field(catalog_data)][galaxy_filter]
-    x = catalog_data.sources[get_x_field(catalog_data)][galaxy_filter]
-    y = catalog_data.sources[get_y_field(catalog_data)][galaxy_filter]
+    if get_x_field(catalog_data) is not None and get_y_field(catalog_data) is not None:
+        x = catalog_data.sources[get_x_field(catalog_data)][galaxy_filter]
+        y = catalog_data.sources[get_y_field(catalog_data)][galaxy_filter]
 
     if catalog_data.catalog == '3D-HST':
         flux = catalog_data.sources[get_flux_field(catalog_data)][galaxy_filter]
