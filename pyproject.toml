@@ -29,6 +29,7 @@ dependencies = [
     "dust_extinction",
     "dustmaps",
     "mocpy",
+    "pyproj==3.7.1",
     "shapely",
     "reproject",
     "vorbin"
