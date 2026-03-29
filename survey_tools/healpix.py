@@ -21,6 +21,13 @@ from survey_tools.utility.rotator import Rotator
 class HealpixException(Exception):
     pass
 
+class WrappedFormatterHMS(angle_helper.FormatterHMS):
+    def __init__(self, longitude_ticks):
+        self._formatter = skyproj.mpl_utils.WrappedFormatterDMS(180, longitude_ticks)
+
+    def __call__(self, direction, factor, values):
+        return super().__call__(direction, factor, self._formatter._wrap_values(factor, values))
+
 def _get_nside(level):
     return 2**level
 
@@ -729,15 +736,8 @@ def _draw_grid(
 
     match grid_longitude:
         case 'hours':
-            class WrappedFormatterHMS(angle_helper.FormatterHMS):
-                def __init__(self):
-                    self._formatter = skyproj.mpl_utils.WrappedFormatterDMS(180, sp._longitude_ticks) # pylint: disable=protected-access
-
-                def __call__(self, direction, factor, values):
-                    return super().__call__(direction, factor, self._formatter._wrap_values(factor, values))
-
             lon_locator = angle_helper.LocatorHMS(n_grid_lon, include_last=zoom)
-            lon_formatter = WrappedFormatterHMS()
+            lon_formatter = WrappedFormatterHMS(sp._longitude_ticks) # pylint: disable=protected-access
         case _:
             lon_locator = angle_helper.LocatorDMS(n_grid_lon, include_last=zoom)
             lon_formatter = None
