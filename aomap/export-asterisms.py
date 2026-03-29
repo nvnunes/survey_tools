@@ -100,13 +100,13 @@ for ao_system in config.ao_systems:
                 key = f"{num_stars}star"
                 indexes = np.flatnonzero(asterisms['num_stars'] == num_stars)
                 num_asterisms = len(indexes)
-                if num_asterisms > 0 and key in ao_system['models']:
+                if num_asterisms > 0 and key in ao_system['point_models']:
                     model_name = ao_system['point_models'][key]
                     print(f"Processing {num_stars} stars with {model_name}...")
                     model = training.load_model('../data/models', model_name)
 
                     data = {
-                        'wavelength': 1.654 * u.micron, # H-band
+                        'wavelength': aomap.get_prediction_wavelength(config),
                         'lgs': ao_system['lgs'],
                         'r': model['data_options']['r'],
                         'theta': model['data_options']['theta']
@@ -136,6 +136,11 @@ for ao_system in config.ao_systems:
 
                         X = training.get_model_X(data)
                         if check_angles:
+                            # These exported field summaries use resolved point-model predictions,
+                            # but the applied orientation is the catalog best_angle chosen by the
+                            # mean-model ranking path. That makes this a mixed product: resolved
+                            # model field performance at a mean-model-selected angle, not a
+                            # self-consistent resolved-model best-over-rotation evaluation.
                             best_angle = asterisms['best_angle'][batch_indexes]
                             if np.ma.is_masked(best_angle):
                                 best_angle = np.ma.filled(best_angle, 0)

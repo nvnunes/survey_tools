@@ -14,7 +14,7 @@ import traceback
 from mocpy import MOC
 import yaml
 import numpy as np
-from astropy.coordinates import SkyCoord, match_coordinates_sky
+from astropy.coordinates import SkyCoord, search_around_sky
 from astropy.io import fits
 from astropy.table import Table, vstack
 import astropy.units as u
@@ -60,6 +60,18 @@ FITS_COLUMN_NGS_COUNT_PREFIX = 'NGS_COUNT'
 FITS_COLUMN_NGS_PIX_PREFIX = 'NGS_PIX'
 FITS_COLUMN_ASTERISM_COUNT_PREFIX = 'ASTERISM_COUNT'
 FITS_COLUMN_ASTERISM_COVERAGE_PREFIX = 'ASTERISM_COVERAGE'
+FITS_COLUMN_ASTERISM_SR_MAX_PREFIX = 'ASTERISM_SR_MAX'
+FITS_COLUMN_ASTERISM_EE_MAX_PREFIX = 'ASTERISM_EE_MAX'
+FITS_COLUMN_ASTERISM_FWHM_MIN_PREFIX = 'ASTERISM_FWHM_MIN'
+FITS_COLUMN_ID_SUFFIX = 'ID'
+FITS_COLUMN_DISTANCE_SUFFIX = 'DISTANCE'
+INFERENCE_THREAD_ENV_VARS = (
+    'OMP_NUM_THREADS',
+    'MKL_NUM_THREADS',
+    'OPENBLAS_NUM_THREADS',
+    'VECLIB_MAXIMUM_THREADS',
+    'NUMEXPR_NUM_THREADS'
+)
 
 #endregion
 
@@ -103,6 +115,21 @@ def read_config(config_or_filename):
 
     if not hasattr(config, 'asterism_epoch'):
         config.asterism_epoch = None
+
+    if not hasattr(config, 'prediction_wavelength'):
+        config.prediction_wavelength = 1.654
+    config.prediction_wavelength *= u.micron
+
+    if not hasattr(config, 'seeing_reference_wavelength'):
+        config.seeing_reference_wavelength = 0.5
+    config.seeing_reference_wavelength *= u.micron
+
+    if not hasattr(config, 'seeing_reference_sr'):
+        config.seeing_reference_sr = 0.0
+    if not hasattr(config, 'seeing_reference_ee'):
+        config.seeing_reference_ee = 0.02
+    if not hasattr(config, 'seeing_reference_fwhm'):
+        config.seeing_reference_fwhm = 650.0
 
     if not hasattr(config, 'build_level'):
         config.build_level = None
@@ -186,10 +213,66 @@ def read_config(config_or_filename):
     if not hasattr(config, 'asterisms_max_overlap'):
         config.asterisms_max_overlap = None
 
+    if not hasattr(config, 'coverage_ee_threshold_resolved'):
+        config.coverage_ee_threshold_resolved = 0.25
+
+    if not hasattr(config, 'coverage_ee_threshold_mean'):
+        config.coverage_ee_threshold_mean = 0.25
+
     return config
+
+def _get_effective_cores(config):
+    if config.cores == -1:
+        return os.cpu_count() or 1
+    return config.cores
+
+def _configure_inference_threads(num_threads, verbose=False, context=None):
+    num_threads = max(1, int(num_threads))
+
+    for env_var in INFERENCE_THREAD_ENV_VARS:
+        os.environ[env_var] = str(num_threads)
+
+    try:
+        import torch
+        torch.set_num_threads(num_threads)
+        # Keep interop at 1 so process-parallel build_inner workers do not oversubscribe.
+        torch.set_num_interop_threads(1)
+    except (ImportError, RuntimeError):
+        pass
+
+    if verbose and context is not None:
+        print(f"  {context}: inference threads = {num_threads}")
 
 def get_ao_system(config, ao_system_name):
     return next((system for system in config.ao_systems if system['name'] == ao_system_name), None)
+
+def get_prediction_wavelength(config):
+    return config.prediction_wavelength
+
+def scale_seeing_performance(prediction_wavelength, sr, ee, fwhm, reference_wavelength):
+    scaled = StructType()
+    wavelength_ratio = (prediction_wavelength / reference_wavelength).to(u.dimensionless_unscaled).value
+
+    if sr is None:
+        scaled.sr = None
+    elif sr <= 0:
+        scaled.sr = sr
+    else:
+        scaled.sr = np.power(sr, np.power(wavelength_ratio, -2.0))
+
+    scaled.ee = None if ee is None else ee * np.power(wavelength_ratio, 2.0/5.0)
+    scaled.fwhm = None if fwhm is None else fwhm * np.power(wavelength_ratio, -1.0/5.0)
+
+    return scaled
+
+def get_seeing_baseline_performance(config):
+    return scale_seeing_performance(
+        config.prediction_wavelength,
+        config.seeing_reference_sr,
+        config.seeing_reference_ee,
+        config.seeing_reference_fwhm,
+        config.seeing_reference_wavelength
+    )
 
 #endregion
 
@@ -320,6 +403,9 @@ def build_inner(config_or_filename, mode='recalc', pixs=None, force_reload_gaia=
     last_time = start_time
 
     def warmup():
+        # build_inner parallelizes over outer pixels, so keep each worker's inference
+        # single-threaded to avoid multiplying backend threads by process count.
+        _configure_inference_threads(1, verbose=verbose, context='build_inner worker')
         _load_models(config.ao_systems)
 
     if config.cores > 1:
@@ -407,8 +493,11 @@ def append_asterism_dust(config_or_filename, mode='build', pixs=None, verbose = 
     total_time = time.time() - start_time
     print(f"\n  done: {npix}px in {total_time:.1f}s")
 
-def append_asterism_counts(config_or_filename, mode='build', pixs=None, verbose = False): # pylint: disable=unused-argument
+def append_asterism_stats(config_or_filename, mode='build', pixs=None, verbose = False): # pylint: disable=unused-argument
     config = read_config(config_or_filename)
+    # append_asterism_stats is single-process, so let backend inference use the
+    # configured core count rather than pinning each model call to one thread.
+    _configure_inference_threads(_get_effective_cores(config), verbose=verbose, context='append_asterism_stats')
 
     if pixs is not None:
         npix = len(pixs)
@@ -424,7 +513,7 @@ def append_asterism_counts(config_or_filename, mode='build', pixs=None, verbose 
 
         num_chunks = int(np.ceil(npix / chunk_size))
 
-    print('Appending asterism counts and coverage:')
+    print('Appending asterism counts, coverage, and performance:')
 
     start_time = time.time()
     last_time = start_time
@@ -452,13 +541,43 @@ def append_asterism_counts(config_or_filename, mode='build', pixs=None, verbose 
                 else:
                     inner_data[1].data[count_column] = asterism_count # pylint: disable=no-member
 
-                asterism_coverage = _get_inner_pixel_asterism_coverage(config, outer_pix, ao_system)
+                asterism_stats = _get_inner_pixel_asterism_coverage_and_performance(config, outer_pix, ao_system)
+                asterism_coverage = asterism_stats.coverage
                 coverage_column = _get_asterism_coverage_field(ao_system)
                 if coverage_column not in inner_data[1].columns.names: # pylint: disable=no-member
                     col = fits.Column(name=coverage_column, format='D', array=asterism_coverage, unit='percent')
                     inner_data[1].columns.add_col(col) # pylint: disable=no-member
                 else:
                     inner_data[1].data[coverage_column] = asterism_coverage # pylint: disable=no-member
+
+                resolved_coverage_column = _get_asterism_coverage_resolved_field(ao_system)
+                if resolved_coverage_column not in inner_data[1].columns.names: # pylint: disable=no-member
+                    col = fits.Column(name=resolved_coverage_column, format='D', array=asterism_stats.resolved_coverage, unit='percent')
+                    inner_data[1].columns.add_col(col) # pylint: disable=no-member
+                else:
+                    inner_data[1].data[resolved_coverage_column] = asterism_stats.resolved_coverage # pylint: disable=no-member
+
+                mean_coverage_column = _get_asterism_coverage_mean_field(ao_system)
+                if mean_coverage_column not in inner_data[1].columns.names: # pylint: disable=no-member
+                    col = fits.Column(name=mean_coverage_column, format='D', array=asterism_stats.mean_coverage, unit='percent')
+                    inner_data[1].columns.add_col(col) # pylint: disable=no-member
+                else:
+                    inner_data[1].data[mean_coverage_column] = asterism_stats.mean_coverage # pylint: disable=no-member
+
+                performance_fields = [
+                    (_get_asterism_sr_max_field(ao_system), 'D', asterism_stats.sr_max, None),
+                    (_get_asterism_ee_max_field(ao_system), 'D', asterism_stats.ee_max, None),
+                    (_get_asterism_ee_max_field_mean_field(ao_system), 'D', asterism_stats.ee_max_field_mean, None),
+                    (_get_asterism_ee_max_id_field(ao_system), 'D', asterism_stats.ee_max_id, None),
+                    (_get_asterism_ee_max_distance_field(ao_system), 'D', asterism_stats.ee_max_distance, 'arcsec'),
+                    (_get_asterism_fwhm_min_field(ao_system), 'D', asterism_stats.fwhm_min, None)
+                ]
+                for column_name, fmt, values, unit in performance_fields:
+                    if column_name not in inner_data[1].columns.names: # pylint: disable=no-member
+                        col = fits.Column(name=column_name, format=fmt, array=values, unit=unit)
+                        inner_data[1].columns.add_col(col) # pylint: disable=no-member
+                    else:
+                        inner_data[1].data[column_name] = values # pylint: disable=no-member
 
             with prevent_interruption():
                 inner_data.flush()
@@ -618,6 +737,11 @@ def _create_data(config, level):
         cols.append(fits.Column(name=_get_ngs_pix_field(ao_system), format='K', array=np.zeros((npix), dtype=np.int_), unit='NGS Pix'))
         cols.append(fits.Column(name=_get_asterism_count_field(ao_system), format='K', array=np.zeros((npix), dtype=np.int_), unit='asterisms'))
         cols.append(fits.Column(name=_get_asterism_coverage_field(ao_system), format='D', array=np.zeros((npix)), unit='percent'))
+        cols.append(fits.Column(name=_get_asterism_coverage_resolved_field(ao_system), format='D', array=np.zeros((npix)), unit='percent'))
+        cols.append(fits.Column(name=_get_asterism_coverage_mean_field(ao_system), format='D', array=np.zeros((npix)), unit='percent'))
+        cols.append(fits.Column(name=_get_asterism_sr_max_field(ao_system), format='D', array=np.full((npix), np.nan), unit=None))
+        cols.append(fits.Column(name=_get_asterism_ee_max_field(ao_system), format='D', array=np.full((npix), np.nan), unit=None))
+        cols.append(fits.Column(name=_get_asterism_fwhm_min_field(ao_system), format='D', array=np.full((npix), np.nan), unit=None))
 
     hdu = fits.BinTableHDU.from_columns(cols)
     hdul = fits.HDUList([fits.PrimaryHDU(), hdu])
@@ -666,6 +790,11 @@ def _set_data_pixel_values(config, levels, level_data, outer_pix, dust, allow_mi
                 level_data[level_index][1].data[_get_ngs_pix_field(ao_system)][aggregate_data.pix] = aggregate_data.sum_ngs_pix[:,i]
                 level_data[level_index][1].data[_get_asterism_count_field(ao_system)][aggregate_data.pix] = aggregate_data.sum_asterism_count[:,i]
                 level_data[level_index][1].data[_get_asterism_coverage_field(ao_system)][aggregate_data.pix] = aggregate_data.mean_asterism_coverage[:,i]
+                level_data[level_index][1].data[_get_asterism_coverage_resolved_field(ao_system)][aggregate_data.pix] = aggregate_data.mean_asterism_coverage_resolved[:,i]
+                level_data[level_index][1].data[_get_asterism_coverage_mean_field(ao_system)][aggregate_data.pix] = aggregate_data.mean_asterism_coverage_mean[:,i]
+                level_data[level_index][1].data[_get_asterism_sr_max_field(ao_system)][aggregate_data.pix] = aggregate_data.max_asterism_sr[:,i]
+                level_data[level_index][1].data[_get_asterism_ee_max_field(ao_system)][aggregate_data.pix] = aggregate_data.max_asterism_ee[:,i]
+                level_data[level_index][1].data[_get_asterism_fwhm_min_field(ao_system)][aggregate_data.pix] = aggregate_data.min_asterism_fwhm[:,i]
 
             level_done[level_index] = True
 
@@ -684,10 +813,20 @@ def _get_initial_aggregate_pixel_values(config, outer_pix, inner_data, dust_exti
         aggregate_data.sum_ngs_count = np.zeros((len(aggregate_data.pix), len(config.ao_systems)), dtype=np.int_)
         aggregate_data.sum_asterism_count = np.zeros((len(aggregate_data.pix), len(config.ao_systems)), dtype=np.int_)
         aggregate_data.mean_asterism_coverage = np.zeros((len(aggregate_data.pix), len(config.ao_systems)))
+        aggregate_data.mean_asterism_coverage_resolved = np.zeros((len(aggregate_data.pix), len(config.ao_systems)))
+        aggregate_data.mean_asterism_coverage_mean = np.zeros((len(aggregate_data.pix), len(config.ao_systems)))
+        aggregate_data.max_asterism_sr = np.full((len(aggregate_data.pix), len(config.ao_systems)), np.nan)
+        aggregate_data.max_asterism_ee = np.full((len(aggregate_data.pix), len(config.ao_systems)), np.nan)
+        aggregate_data.min_asterism_fwhm = np.full((len(aggregate_data.pix), len(config.ao_systems)), np.nan)
         for i, ao_system in enumerate(config.ao_systems):
             aggregate_data.sum_ngs_count[:,i] = _get_inner_pixel_data_column(inner_data, _get_ngs_count_field(ao_system))
             aggregate_data.sum_asterism_count[:,i] = _get_inner_pixel_data_column(inner_data, _get_asterism_count_field(ao_system))
             aggregate_data.mean_asterism_coverage[:,i] = _get_inner_pixel_data_column(inner_data, _get_asterism_coverage_field(ao_system))
+            aggregate_data.mean_asterism_coverage_resolved[:,i] = _get_inner_pixel_data_column(inner_data, _get_asterism_coverage_resolved_field(ao_system))
+            aggregate_data.mean_asterism_coverage_mean[:,i] = _get_inner_pixel_data_column(inner_data, _get_asterism_coverage_mean_field(ao_system))
+            aggregate_data.max_asterism_sr[:,i] = _get_inner_pixel_data_column(inner_data, _get_asterism_sr_max_field(ao_system))
+            aggregate_data.max_asterism_ee[:,i] = _get_inner_pixel_data_column(inner_data, _get_asterism_ee_max_field(ao_system))
+            aggregate_data.min_asterism_fwhm[:,i] = _get_inner_pixel_data_column(inner_data, _get_asterism_fwhm_min_field(ao_system))
         aggregate_data.sum_ngs_pix = np.minimum(aggregate_data.sum_ngs_count, 1)
     return aggregate_data
 
@@ -701,6 +840,11 @@ def _aggregate_pixel_values(config, aggregate_data):
         aggregate_data.sum_ngs_pix = _decrease_values_level(aggregate_data.sum_ngs_pix, 'sum')
         aggregate_data.sum_asterism_count = _decrease_values_level(aggregate_data.sum_asterism_count, 'sum')
         aggregate_data.mean_asterism_coverage = _decrease_values_level(aggregate_data.mean_asterism_coverage, 'mean')
+        aggregate_data.mean_asterism_coverage_resolved = _decrease_values_level(aggregate_data.mean_asterism_coverage_resolved, 'mean')
+        aggregate_data.mean_asterism_coverage_mean = _decrease_values_level(aggregate_data.mean_asterism_coverage_mean, 'mean')
+        aggregate_data.max_asterism_sr = _decrease_values_level(aggregate_data.max_asterism_sr, 'mean')
+        aggregate_data.max_asterism_ee = _decrease_values_level(aggregate_data.max_asterism_ee, 'mean')
+        aggregate_data.min_asterism_fwhm = _decrease_values_level(aggregate_data.min_asterism_fwhm, 'mean')
 
 def _decrease_pix_level(pixs, num_levels=1):
     for _ in range(num_levels):
@@ -872,6 +1016,30 @@ def _get_asterism_count_field(ao_system):
 
 def _get_asterism_coverage_field(ao_system):
     return f"{FITS_COLUMN_ASTERISM_COVERAGE_PREFIX}_{_get_field_from_key(ao_system['name'])}"
+
+def _get_asterism_coverage_resolved_field(ao_system):
+    return f"{FITS_COLUMN_ASTERISM_COVERAGE_PREFIX}_{_get_field_from_key(ao_system['name'])}_RESOLVED"
+
+def _get_asterism_coverage_mean_field(ao_system):
+    return f"{FITS_COLUMN_ASTERISM_COVERAGE_PREFIX}_{_get_field_from_key(ao_system['name'])}_MEAN"
+
+def _get_asterism_sr_max_field(ao_system):
+    return f"{FITS_COLUMN_ASTERISM_SR_MAX_PREFIX}_{_get_field_from_key(ao_system['name'])}"
+
+def _get_asterism_ee_max_field(ao_system):
+    return f"{FITS_COLUMN_ASTERISM_EE_MAX_PREFIX}_{_get_field_from_key(ao_system['name'])}"
+
+def _get_asterism_ee_max_field_mean_field(ao_system):
+    return f"{_get_asterism_ee_max_field(ao_system)}_FIELD_MEAN"
+
+def _get_asterism_ee_max_id_field(ao_system):
+    return f"{_get_asterism_ee_max_field(ao_system)}_{FITS_COLUMN_ID_SUFFIX}"
+
+def _get_asterism_ee_max_distance_field(ao_system):
+    return f"{_get_asterism_ee_max_field(ao_system)}_{FITS_COLUMN_DISTANCE_SUFFIX}"
+
+def _get_asterism_fwhm_min_field(ao_system):
+    return f"{FITS_COLUMN_ASTERISM_FWHM_MIN_PREFIX}_{_get_field_from_key(ao_system['name'])}"
 
 def _create_inner(config, outer_pix, num_retries=3, force_reload_gaia=False):
     # Compute Galaxy Density Model
@@ -1122,7 +1290,7 @@ def find_outer_asterisms(config, outer_pix, ao_system_name, skip_overlaps=False,
 
     if not skip_overlaps and config.asterisms_max_overlap is not None:
         asterism_filter = np.ones((len(asterisms)), dtype=bool)
-        asterism_qualities = _get_asterism_quality(asterisms, ao_system)
+        asterism_qualities = _get_asterism_quality(config, asterisms, ao_system)
         asterism_pixs = healpix.get_healpix_from_skycoord(fov_level, asterism_centres)
 
         pixs = np.unique(asterism_pixs)
@@ -1207,7 +1375,7 @@ def _load_models(ao_systems):
             model = training.load_model('../data/models', model_name, force_cpu=True)
             model_cache[ao_system['name']][key] = model
 
-def _get_asterisms_EE(asterisms, ao_system, batch_size=10000):
+def _get_asterisms_EE(config, asterisms, ao_system, batch_size=10000):
     training = get_training_module()
 
     if 'models' not in ao_system or len(ao_system['models']) == 0:
@@ -1237,13 +1405,18 @@ def _get_asterisms_EE(asterisms, ao_system, batch_size=10000):
                 batch_indexes = indexes[start_idx:end_idx]
 
                 data = {
-                    'wavelength': 1.654 * u.micron, # H-band
+                    'wavelength': get_prediction_wavelength(config),
                     'lgs': ao_system['lgs'],
                     'ngs': asterism.get_ngs_from_asterisms(asterisms[batch_indexes])
                 }
 
                 X = training.get_model_X(data, mean_only=True)
                 if check_angles:
+                    # Asterism-centered rotation optimization: build mean-model features
+                    # in the asterism frame, sweep the sampled instrument angles, and
+                    # keep the angle that maximizes EE for catalog ranking. See
+                    # _predict_inner_pixel_asterism_performance_batch() for the distinct
+                    # inner-pixel-centered rotation search used for on-axis sky mapping.
                     theta_idxs = training.get_ngs_theta_indexes(num_stars)
                     rot_angles = [0.0] + [angle for angle in np.arange(ao_system['rot_range'][0], ao_system['rot_range'][1], ao_system['rot_step']) if angle != 0]
 
@@ -1275,9 +1448,9 @@ def _get_asterisms_EE(asterisms, ao_system, batch_size=10000):
 
     return qualities
 
-def _get_asterism_quality(asterisms, ao_system):
+def _get_asterism_quality(config, asterisms, ao_system):
     if 'models' in ao_system:
-        return _get_asterisms_EE(asterisms, ao_system)
+        return _get_asterisms_EE(config, asterisms, ao_system)
 
     qualities = np.zeros((len(asterisms)))
 
@@ -1379,19 +1552,403 @@ def _get_inner_pixel_asterism_count(config, outer_pix, ao_system):
 
     return asterism_count
 
-def _get_inner_pixel_asterism_coverage(config, outer_pix, ao_system):
-    asterisms = load_asterisms(config, outer_pix, ao_system['name'], max_dust_extinction=config.asterisms_max_dust_extinction, include_neighbours=True, return_none_if_missing=True)
-    if asterisms is not None and len(asterisms) > 0:
-        asterism_catalog = SkyCoord(ra=asterisms['ra'], dec=asterisms['dec'], unit=(u.degree, u.degree))
-        (_, inner_centres) = healpix.get_subpixels_skycoord(config.outer_level, outer_pix, config.inner_level)
-        _, seps, _ = match_coordinates_sky(inner_centres, asterism_catalog, storekdtree=False) # only used once
-        inner_resolution = healpix.get_resolution(config.inner_level)
-        asterism_coverage = (seps < (ao_system['fov']-inner_resolution)/2).astype(np.float64)
-    else:
-        npix = healpix.get_subpixel_npix(config.outer_level, config.inner_level)
-        asterism_coverage = np.zeros((npix))
+def _get_inner_pixel_asterism_coverage_and_performance(config, outer_pix, ao_system, batch_size=10000):
+    npix = healpix.get_subpixel_npix(config.outer_level, config.inner_level)
+    seeing_baseline = get_seeing_baseline_performance(config)
 
-    return asterism_coverage
+    stats = StructType()
+    stats.coverage = np.zeros((npix))
+    stats.resolved_coverage = np.zeros((npix))
+    stats.mean_coverage = np.zeros((npix))
+    stats.sr_max = np.full((npix), np.nan if seeing_baseline.sr is None else seeing_baseline.sr)
+    stats.ee_max = np.full((npix), np.nan if seeing_baseline.ee is None else seeing_baseline.ee)
+    stats.ee_max_field_mean = np.full((npix), np.nan)
+    stats.ee_max_id = np.full((npix), np.nan)
+    stats.ee_max_distance = np.full((npix), np.nan)
+    stats.fwhm_min = np.full((npix), np.nan if seeing_baseline.fwhm is None else seeing_baseline.fwhm)
+    stats.ee_max_angle = np.full((npix), np.nan)
+    stats.ee_max_asterism_idx = np.full((npix), -1, dtype=np.int_)
+
+    context = _get_inner_pixel_asterism_context(config, outer_pix, ao_system)
+    if context.asterisms is None or len(context.asterisms) == 0 or len(context.pixel_idxs) == 0:
+        return stats
+
+    stats.coverage[np.unique(context.pixel_idxs)] = 1.0
+
+    if 'point_models' not in ao_system or len(ao_system['point_models']) == 0:
+        return stats
+
+    _update_inner_pixel_asterism_performance(
+        config,
+        stats,
+        context,
+        ao_system,
+        np.full((len(context.pixel_idxs)), True),
+        batch_size=batch_size
+    )
+
+    if 'models' in ao_system and len(ao_system['models']) > 0:
+        _update_inner_pixel_asterism_field_mean(config, stats, context, ao_system, batch_size=batch_size)
+
+    stats.resolved_coverage = (stats.ee_max >= config.coverage_ee_threshold_resolved).astype(np.float64)
+    stats.mean_coverage = (stats.ee_max_field_mean >= config.coverage_ee_threshold_mean).astype(np.float64)
+
+    return stats
+
+def _get_inner_pixel_asterism_context(config, outer_pix, ao_system):
+    context = StructType()
+    context.outer_pix = outer_pix
+    context.pixel_idxs = np.array([], dtype=np.int_)
+    context.asterism_idxs = np.array([], dtype=np.int_)
+
+    _, context.inner_centres = healpix.get_subpixels_skycoord(config.outer_level, outer_pix, config.inner_level)
+    outer_centre = healpix.get_pixel_skycoord(config.outer_level, outer_pix)
+    context.inner_x, context.inner_y = _get_plane_offsets_arcsec(outer_centre, context.inner_centres)
+
+    local_asterisms = load_asterisms(
+        config,
+        outer_pix,
+        ao_system['name'],
+        max_dust_extinction=config.asterisms_max_dust_extinction,
+        return_none_if_missing=True
+    )
+
+    tables = []
+    locality = []
+    if local_asterisms is not None and len(local_asterisms) > 0:
+        tables.append(local_asterisms)
+        locality.append(np.ones((len(local_asterisms)), dtype=bool))
+
+    for pix in healpix.get_neighbours(config.outer_level, outer_pix):
+        if pix < 0:
+            continue
+        neighbour_asterisms = load_asterisms(
+            config,
+            pix,
+            ao_system['name'],
+            max_dust_extinction=config.asterisms_max_dust_extinction,
+            return_none_if_missing=True
+        )
+        if neighbour_asterisms is None or len(neighbour_asterisms) == 0:
+            continue
+        tables.append(neighbour_asterisms)
+        locality.append(np.zeros((len(neighbour_asterisms)), dtype=bool))
+
+    context.asterisms = None if len(tables) == 0 else tables[0] if len(tables) == 1 else vstack(tables)
+    context.local_asterism_mask = np.array([], dtype=bool) if len(locality) == 0 else np.concatenate(locality)
+
+    if context.asterisms is None or len(context.asterisms) == 0:
+        return context
+
+    asterism_catalog = SkyCoord(ra=context.asterisms['ra'], dec=context.asterisms['dec'], unit=(u.degree, u.degree))
+    context.asterism_x, context.asterism_y = _get_plane_offsets_arcsec(outer_centre, asterism_catalog)
+
+    inner_resolution = healpix.get_resolution(config.inner_level)
+    context.pixel_idxs, context.asterism_idxs, _, _ = search_around_sky(
+        context.inner_centres,
+        asterism_catalog,
+        (ao_system['fov'] - inner_resolution)/2
+    )
+
+    context.star_x = {}
+    context.star_y = {}
+    for star_idx in range(1, 4):
+        star_coords = SkyCoord(
+            ra=context.asterisms[f'star{star_idx}_ra'],
+            dec=context.asterisms[f'star{star_idx}_dec'],
+            unit=(u.degree, u.degree)
+        )
+        context.star_x[star_idx], context.star_y[star_idx] = _get_plane_offsets_arcsec(outer_centre, star_coords)
+
+    return context
+
+def _get_plane_offsets_arcsec(reference_coord, skycoords):
+    lon_offset, lat_offset = reference_coord.spherical_offsets_to(skycoords)
+    return lon_offset.to(u.arcsec).value, lat_offset.to(u.arcsec).value
+
+def _get_point_model_cache_key(ao_system_name, num_stars):
+    return f"{ao_system_name}:{num_stars}star"
+
+point_model_cache = {}
+mean_model_cache = {}
+
+def _get_mean_model(ao_system, num_stars):
+    training = get_training_module()
+
+    key = f"{num_stars}star"
+    if 'models' not in ao_system or key not in ao_system['models']:
+        return None
+
+    cache_key = _get_point_model_cache_key(f"{ao_system['name']}:mean", num_stars)
+    if cache_key not in mean_model_cache:
+        mean_model_cache[cache_key] = training.load_model('../data/models', ao_system['models'][key], force_cpu=True)
+
+    return mean_model_cache[cache_key]
+
+def _get_point_model(ao_system, num_stars):
+    training = get_training_module()
+
+    key = f"{num_stars}star"
+    if 'point_models' not in ao_system or key not in ao_system['point_models']:
+        return None
+
+    cache_key = _get_point_model_cache_key(ao_system['name'], num_stars)
+    if cache_key not in point_model_cache:
+        point_model_cache[cache_key] = training.load_model('../data/models', ao_system['point_models'][key], force_cpu=True)
+
+    return point_model_cache[cache_key]
+
+def _get_ao_lgs_xy(lgs):
+    lgs_with_xy = []
+    for star in lgs:
+        lgs_with_xy.append({
+            **star,
+            'x': star['zd'] * np.cos(np.deg2rad(star['az'])),
+            'y': star['zd'] * np.sin(np.deg2rad(star['az']))
+        })
+    return lgs_with_xy
+
+def _get_rotation_angles(ao_system):
+    rot_angles = [0.0]
+    if ao_system['rot_range'] is not None and ao_system['rot_step'] is not None:
+        rot_angles += [angle for angle in np.arange(ao_system['rot_range'][0], ao_system['rot_range'][1], ao_system['rot_step']) if angle != 0]
+    return rot_angles
+
+def _get_valid_ngs_from_context_pair(context, pixel_idx, asterism_idx, field_radius, field_radius_1ngs):
+    all_stars = []
+    pixel_x = context.inner_x[pixel_idx]
+    pixel_y = context.inner_y[pixel_idx]
+    num_stars = int(context.asterisms['num_stars'][asterism_idx])
+
+    for star_idx in range(1, num_stars + 1):
+        dx = context.star_x[star_idx][asterism_idx] - pixel_x
+        dy = context.star_y[star_idx][asterism_idx] - pixel_y
+        zd = np.hypot(dx, dy)
+        all_stars.append({
+            'zd': zd,
+            'az': np.rad2deg(np.arctan2(dx, dy)),
+            'mag': context.asterisms[f'star{star_idx}_mag'][asterism_idx]
+        })
+
+    stars_in_fov = [star for star in all_stars if star['zd'] <= field_radius]
+    if len(stars_in_fov) >= 2:
+        return stars_in_fov
+
+    stars_in_fov_1ngs = [star for star in all_stars if star['zd'] <= field_radius_1ngs]
+    return stars_in_fov_1ngs
+
+def _predict_inner_pixel_asterism_performance_batch(config, ao_system, num_stars, model, ngs):
+    training = get_training_module()
+
+    lgs = _get_ao_lgs_xy(ao_system['lgs'])
+    theta_idxs = training.get_ngs_theta_indexes(num_stars)
+    rot_angles = _get_rotation_angles(ao_system)
+    num_pairs = len(ngs)
+
+    metrics = StructType()
+    metrics.sr = np.full((num_pairs), np.nan)
+    metrics.ee = np.full((num_pairs), np.nan)
+    metrics.fwhm = np.full((num_pairs), np.nan)
+    metrics.ee_angle = np.full((num_pairs), np.nan)
+
+    data = {
+        'wavelength': get_prediction_wavelength(config),
+        'lgs': lgs,
+        'r': np.zeros((num_pairs)),
+        'theta': np.zeros((num_pairs)),
+        'ngs': ngs,
+        'x': np.zeros((num_pairs)),
+        'y': np.zeros((num_pairs))
+    }
+    X = training.get_model_X(data)
+
+    if len(rot_angles) == 1:
+        Y_pred = training.get_prediction(X, model, skip_cache_clear=True)
+        metrics.sr = Y_pred[:, training.get_sr_index()]
+        metrics.ee = Y_pred[:, training.get_ee_index()]
+        metrics.fwhm = Y_pred[:, training.get_fwhm_index()]
+        metrics.ee_angle = np.zeros((num_pairs))
+        return metrics
+
+    X_rot = np.tile(X, (len(rot_angles), 1))
+    # Inner-pixel-centered rotation optimization: recenter the NGS geometry on
+    # the science target, evaluate the resolved model over sampled angles, and
+    # keep the best per-metric result for that sky position. See
+    # _get_asterisms_EE() for the distinct asterism-centered ranking search.
+    for rot_idx, rot_angle in enumerate(rot_angles):
+        if rot_angle == 0:
+            continue
+        start_idx = rot_idx * num_pairs
+        end_idx = start_idx + num_pairs
+        X_rot[start_idx:end_idx, theta_idxs] += np.deg2rad(rot_angle)
+        X_rot[start_idx:end_idx, theta_idxs] = training.wrap_angle_rad(X_rot[start_idx:end_idx, theta_idxs])
+
+    Y_pred = training.get_prediction(X_rot, model, skip_cache_clear=True)
+    Y_pred = Y_pred.reshape(len(rot_angles), num_pairs, Y_pred.shape[1])
+    metrics.sr = np.max(Y_pred[:, :, training.get_sr_index()], axis=0)
+    ee_values = Y_pred[:, :, training.get_ee_index()]
+    best_ee_rot_idxs = np.argmax(ee_values, axis=0)
+    metrics.ee = ee_values[best_ee_rot_idxs, np.arange(num_pairs)]
+    metrics.ee_angle = np.array(rot_angles, dtype=np.float64)[best_ee_rot_idxs]
+    metrics.fwhm = np.min(Y_pred[:, :, training.get_fwhm_index()], axis=0)
+
+    return metrics
+
+def _predict_inner_pixel_asterism_field_mean_batch(config, ao_system, num_stars, model, ngs, rot_angles):
+    training = get_training_module()
+    num_pairs = len(ngs)
+
+    data = {
+        'wavelength': get_prediction_wavelength(config),
+        'lgs': ao_system['lgs'],
+        'ngs': ngs,
+        'r': np.zeros((num_pairs)),
+        'theta': np.zeros((num_pairs)),
+        'x': np.zeros((num_pairs)),
+        'y': np.zeros((num_pairs))
+    }
+    X = training.get_model_X(data, mean_only=True)
+    theta_idxs = training.get_ngs_theta_indexes(num_stars)
+    if len(theta_idxs) > 0:
+        X[:, theta_idxs] += np.deg2rad(np.array(rot_angles, dtype=np.float64)).reshape(-1, 1)
+        X[:, theta_idxs] = training.wrap_angle_rad(X[:, theta_idxs])
+
+    Y_pred = training.get_prediction(X, model, skip_cache_clear=True)
+    return Y_pred[:, training.get_ee_index()]
+
+def _update_inner_pixel_asterism_performance(config, stats, context, ao_system, pair_filter, batch_size=10000):
+    field_radius = ao_system['fov'].to(u.arcsec).value / 2.0
+    field_radius_1ngs = ao_system['fov_1ngs'].to(u.arcsec).value / 2.0
+
+    candidate_pixel_idxs = context.pixel_idxs[pair_filter]
+    candidate_asterism_idxs = context.asterism_idxs[pair_filter]
+
+    num_batches = int(np.ceil(len(candidate_pixel_idxs) / batch_size))
+    for batch in range(num_batches):
+        start_idx = batch * batch_size
+        end_idx = min((batch + 1) * batch_size, len(candidate_pixel_idxs))
+        if start_idx >= end_idx:
+            continue
+
+        batch_pixel_idxs = candidate_pixel_idxs[start_idx:end_idx]
+        batch_asterism_idxs = candidate_asterism_idxs[start_idx:end_idx]
+        grouped_pairs = {}
+        for row_idx, (pixel_idx, asterism_idx) in enumerate(zip(batch_pixel_idxs, batch_asterism_idxs)):
+            # Recentering on the inner pixel can push some catalog asterism stars
+            # outside the patrol radius. Those stars were not part of the model's
+            # training domain and must be dropped before choosing the 1/2/3-star
+            # inference model for this pixel-centered evaluation.
+            ngs = _get_valid_ngs_from_context_pair(context, pixel_idx, asterism_idx, field_radius, field_radius_1ngs)
+            surviving_stars = len(ngs)
+            if surviving_stars < ao_system['min_wfs']:
+                continue
+
+            # Re-bucket by surviving star count so each group can use the
+            # matching 1/2/3-star point model in one homogeneous batch.
+            if surviving_stars not in grouped_pairs:
+                grouped_pairs[surviving_stars] = {
+                    'row_idxs': [],
+                    'pixel_idxs': [],
+                    'asterism_idxs': [],
+                    'ngs': []
+                }
+
+            grouped_pairs[surviving_stars]['row_idxs'].append(row_idx)
+            grouped_pairs[surviving_stars]['pixel_idxs'].append(pixel_idx)
+            grouped_pairs[surviving_stars]['asterism_idxs'].append(asterism_idx)
+            grouped_pairs[surviving_stars]['ngs'].append(ngs)
+
+        for surviving_stars, group in grouped_pairs.items():
+            model = _get_point_model(ao_system, surviving_stars)
+            if model is None:
+                continue
+
+            # Run one batched inference for all pixel/asterism pairs that share
+            # this post-FOV-cut guide-star count.
+            metrics = _predict_inner_pixel_asterism_performance_batch(
+                config,
+                ao_system,
+                surviving_stars,
+                model,
+                group['ngs']
+            )
+
+            # Scatter the batched outputs back to individual candidate pairs and
+            # update each inner pixel only when this candidate improves the
+            # current best metric.
+            for result_idx, (row_idx, pixel_idx, asterism_idx, sr, ee, fwhm) in enumerate(zip(
+                group['row_idxs'],
+                group['pixel_idxs'],
+                group['asterism_idxs'],
+                metrics.sr,
+                metrics.ee,
+                metrics.fwhm
+            )):
+                if np.isfinite(sr) and (np.isnan(stats.sr_max[pixel_idx]) or sr > stats.sr_max[pixel_idx]):
+                    stats.sr_max[pixel_idx] = sr
+                if np.isfinite(ee) and (np.isnan(stats.ee_max[pixel_idx]) or ee > stats.ee_max[pixel_idx]):
+                    stats.ee_max[pixel_idx] = ee
+                    stats.ee_max_angle[pixel_idx] = metrics.ee_angle[result_idx]
+                    stats.ee_max_asterism_idx[pixel_idx] = asterism_idx
+                    stats.ee_max_id[pixel_idx] = context.asterisms['id'][asterism_idx] if context.local_asterism_mask[asterism_idx] else np.nan
+                    stats.ee_max_distance[pixel_idx] = np.hypot(
+                        context.asterism_x[asterism_idx] - context.inner_x[pixel_idx],
+                        context.asterism_y[asterism_idx] - context.inner_y[pixel_idx]
+                    )
+                if np.isfinite(fwhm) and (np.isnan(stats.fwhm_min[pixel_idx]) or fwhm < stats.fwhm_min[pixel_idx]):
+                    stats.fwhm_min[pixel_idx] = fwhm
+
+def _update_inner_pixel_asterism_field_mean(config, stats, context, ao_system, batch_size=10000):
+    winner_pixel_idxs = np.flatnonzero(stats.ee_max_asterism_idx >= 0)
+    if len(winner_pixel_idxs) == 0:
+        return
+
+    field_radius = ao_system['fov'].to(u.arcsec).value / 2.0
+    field_radius_1ngs = ao_system['fov_1ngs'].to(u.arcsec).value / 2.0
+    grouped_pairs = {}
+    for pixel_idx in winner_pixel_idxs:
+        asterism_idx = int(stats.ee_max_asterism_idx[pixel_idx])
+        ngs = _get_valid_ngs_from_context_pair(context, pixel_idx, asterism_idx, field_radius, field_radius_1ngs)
+        surviving_stars = len(ngs)
+        if surviving_stars < ao_system['min_wfs']:
+            continue
+
+        if surviving_stars not in grouped_pairs:
+            grouped_pairs[surviving_stars] = {
+                'pixel_idxs': [],
+                'ngs': [],
+                'angles': []
+            }
+
+        grouped_pairs[surviving_stars]['pixel_idxs'].append(pixel_idx)
+        grouped_pairs[surviving_stars]['ngs'].append(ngs)
+        grouped_pairs[surviving_stars]['angles'].append(stats.ee_max_angle[pixel_idx])
+
+    for surviving_stars, group in grouped_pairs.items():
+        model = _get_mean_model(ao_system, surviving_stars)
+        if model is None:
+            continue
+
+        num_rows = len(group['pixel_idxs'])
+        num_batches = int(np.ceil(num_rows / batch_size))
+        for batch in range(num_batches):
+            start_idx = batch * batch_size
+            end_idx = min((batch + 1) * batch_size, num_rows)
+            if start_idx >= end_idx:
+                continue
+
+            batch_pixel_idxs = group['pixel_idxs'][start_idx:end_idx]
+            batch_ngs = group['ngs'][start_idx:end_idx]
+            batch_angles = group['angles'][start_idx:end_idx]
+            ee_field_mean = _predict_inner_pixel_asterism_field_mean_batch(
+                config,
+                ao_system,
+                surviving_stars,
+                model,
+                batch_ngs,
+                batch_angles
+            )
+            stats.ee_max_field_mean[batch_pixel_idxs] = ee_field_mean
 
 #endregion
 
@@ -1424,6 +1981,18 @@ def _get_map_title(key, ao_system=None):
             title = 'NGS Pix Density'
         case _ if key.startswith('ngs-pix'):
             title = 'NGS Pix'
+        case _ if key.startswith('asterism-coverage') and key.endswith('-resolved'):
+            title = 'AO Coverage (Resolved)'
+        case _ if key.startswith('asterism-coverage') and key.endswith('-mean'):
+            title = 'AO Coverage (Field Mean)'
+        case _ if key.startswith('asterism-coverage'):
+            title = 'Asterism Coverage'
+        case _ if key.startswith('asterism-sr-max'):
+            title = 'Best SR'
+        case _ if key.startswith('asterism-ee-max'):
+            title = 'Best EE'
+        case _ if key.startswith('asterism-fwhm-min'):
+            title = 'Best FWHM'
         case _ if key.startswith('ao-friendly'):
             title = 'AO-Friendly Areas'
         case _:
@@ -1435,6 +2004,8 @@ def _get_map_title(key, ao_system=None):
     return title
 
 def _get_map_norm(key, unit): # pylint: disable=unused-argument
+    if any(token in key for token in ['sr-max', 'ee-max', 'fwhm-min']):
+        return 'linear'
     if unit == 'percent':
         return 'linear'
     return 'log'
@@ -1575,9 +2146,14 @@ def get_map_data(config, map_level, key, level=None, pixs=None, coords=(), ra_li
     if pixs is not None and not (isinstance(pixs, list) or isinstance(pixs, np.ndarray)):
         pixs = [pixs]
 
-    ao_key = next((prefix for prefix in ['ao-friendly', 'ngs-density', 'ngs-pix-density', 'ngs-count', 'ngs-pix'] if f"{prefix}-" in key), None)
+    ao_key = next((prefix for prefix in ['ao-friendly', 'ngs-density', 'ngs-pix-density', 'ngs-count', 'ngs-pix', 'asterism-coverage', 'asterism-sr-max', 'asterism-ee-max', 'asterism-fwhm-min'] if f"{prefix}-" in key), None)
     if ao_key is not None:
-        ao_system_name = key.replace(f"{ao_key}-",'')
+        if ao_key == 'asterism-coverage' and key.endswith('-resolved'):
+            ao_system_name = key.replace(f"{ao_key}-", '').rsplit('-resolved', 1)[0]
+        elif ao_key == 'asterism-coverage' and key.endswith('-mean'):
+            ao_system_name = key.replace(f"{ao_key}-", '').rsplit('-mean', 1)[0]
+        else:
+            ao_system_name = key.replace(f"{ao_key}-",'')
         ao_system = get_ao_system(config, ao_system_name)
     else:
         ao_system = None
@@ -1955,5 +2531,320 @@ def save_map(config, map_data, filename=None, overwrite=False):
     header['INDXSCHM'] = 'IMPLICIT'
     header['OBJECT'] = 'FULLSKY'
     hdu.writeto(filename, overwrite=overwrite)
+
+def plot_inner_pixel_asterism(config_or_filename,
+                              outer_pix,
+                              inner_pix,
+                              asterism_id,
+                              ao_system_name,
+                              field_radius=60.0,
+                              rotation_angle=0.0,
+                              title=None,
+                              filename=None,
+                              return_fig=False):
+    config = read_config(config_or_filename)
+    ao_system = get_ao_system(config, ao_system_name)
+    if ao_system is None:
+        raise AOMapException(f"AO system not found: {ao_system_name}")
+
+    context = _get_inner_pixel_asterism_context(config, outer_pix, ao_system)
+    if context.asterisms is None or len(context.asterisms) == 0:
+        raise AOMapException(f"No asterisms found for outer pixel {outer_pix}")
+
+    inner_pixs = healpix.get_subpixels(config.outer_level, outer_pix, config.inner_level)
+    row_matches = np.where(inner_pixs == inner_pix)[0]
+    if len(row_matches) == 0:
+        raise AOMapException(f"Inner pixel {inner_pix} not found in outer pixel {outer_pix}")
+    row_idx = row_matches[0]
+
+    context_ids = np.array(context.asterisms['id'], dtype=np.int_)
+    local_mask = np.array(context.local_asterism_mask, dtype=bool)
+    asterism_matches = np.where((context_ids == asterism_id) & local_mask)[0]
+    if len(asterism_matches) == 0:
+        raise AOMapException(f"Asterism {asterism_id} not found as a local asterism in outer pixel {outer_pix}")
+    asterism_idx = asterism_matches[0]
+
+    pixel_x = float(context.inner_x[row_idx])
+    pixel_y = float(context.inner_y[row_idx])
+    rotation_angle_rad = np.deg2rad(rotation_angle)
+
+    def rotate_offsets(x, y):
+        return (
+            x * np.cos(rotation_angle_rad) - y * np.sin(rotation_angle_rad),
+            x * np.sin(rotation_angle_rad) + y * np.cos(rotation_angle_rad)
+        )
+
+    asterism_x, asterism_y = rotate_offsets(
+        float(context.asterism_x[asterism_idx] - pixel_x),
+        float(context.asterism_y[asterism_idx] - pixel_y)
+    )
+
+    fig, ax = plt.subplots(figsize=(6.5, 6.5))
+    ax.add_patch(plt.Circle((0, 0), field_radius, fill=False, lw=1.6, color='0.35'))
+    ax.scatter([0], [0], s=70, marker='+', color='black', label='Inner pixel center')
+    ax.scatter([asterism_x], [asterism_y], s=55, marker='x', color='tab:red', label='Asterism center')
+
+    lgs = _get_ao_lgs_xy(ao_system['lgs'])
+    for star in lgs:
+        ax.scatter(
+            [star['x']],
+            [star['y']],
+            s=120,
+            marker='s',
+            color='gold',
+            edgecolor='black',
+            zorder=2
+        )
+
+    star_points = []
+    valid_star_count = 0
+    num_stars = int(context.asterisms['num_stars'][asterism_idx])
+    star_mags = np.array([float(context.asterisms[f'star{star_idx}_mag'][asterism_idx]) for star_idx in range(1, num_stars + 1)])
+    min_mag = np.min(star_mags)
+    max_mag = np.max(star_mags)
+    for star_idx in range(1, num_stars + 1):
+        star_x, star_y = rotate_offsets(
+            float(context.star_x[star_idx][asterism_idx] - pixel_x),
+            float(context.star_y[star_idx][asterism_idx] - pixel_y)
+        )
+        star_mag = float(context.asterisms[f'star{star_idx}_mag'][asterism_idx])
+        star_radius = float(np.hypot(star_x, star_y))
+        is_valid = star_radius <= field_radius
+        if is_valid:
+            valid_star_count += 1
+        star_points.append((star_x, star_y))
+        alpha = 1.0 if is_valid else 0.35
+        if max_mag > min_mag:
+            mag_scale = 1.0 - (star_mag - min_mag) / (max_mag - min_mag)
+        else:
+            mag_scale = 0.5
+        red_level = 0.25 + 0.65 * mag_scale
+        star_color = (1.0, 1.0 - red_level, 1.0 - red_level)
+        ax.scatter([star_x], [star_y], s=120, color=star_color, edgecolor='black', zorder=3, alpha=alpha)
+        ax.text(star_x + 2.0, star_y + 2.0, f'S{star_idx}  m={star_mag:.1f}', fontsize=9, alpha=1.0 if is_valid else 0.5)
+        ax.plot([0, star_x], [0, star_y], color=star_color, alpha=0.25 if is_valid else 0.12, lw=1.0)
+
+    ax.set_aspect('equal')
+    ax.set_xlabel('x offset from inner pixel center (arcsec)')
+    ax.set_ylabel('y offset from inner pixel center (arcsec)')
+    ax.set_title(title or f'Inner pixel {inner_pix} with asterism {asterism_id} ({valid_star_count}/{num_stars} in FOV, rot={rotation_angle:.1f} deg)')
+    ax.grid(alpha=0.25)
+    ax.legend(loc='upper right')
+
+    margin = max(
+        field_radius,
+        np.max(np.abs(np.array(star_points + [(asterism_x, asterism_y)])))
+    ) + 10
+    ax.set_xlim(-margin, margin)
+    ax.set_ylim(-margin, margin)
+
+    fig.tight_layout()
+
+    if filename is not None:
+        dirname = os.path.dirname(filename)
+        if dirname:
+            os.makedirs(dirname, exist_ok=True)
+        fig.savefig(filename, dpi=170)
+
+    if return_fig:
+        return fig
+
+    if filename is None:
+        plt.show()
+    else:
+        plt.close(fig)
+
+def plot_asterism_trend_diagnostics(config_or_filename,
+                                    outer_pix,
+                                    ao_system_name,
+                                    star_counts=(2, 3),
+                                    global_ranges=True,
+                                    filename_prefix=None,
+                                    return_figs=False):
+    config = read_config(config_or_filename)
+    ao_system = get_ao_system(config, ao_system_name)
+    if ao_system is None:
+        raise AOMapException(f"AO system not found: {ao_system_name}")
+
+    inner_filename = _get_inner_pixel_data_filename(config, outer_pix)
+    asterism_filename = _get_asterisms_data_filename(config, outer_pix, ao_system_name)
+    if not os.path.isfile(inner_filename):
+        raise AOMapException(f"Inner-pixel file not found: {inner_filename}")
+    if not os.path.isfile(asterism_filename):
+        raise AOMapException(f"Asterism file not found: {asterism_filename}")
+
+    with fits.open(inner_filename) as hdul:
+        inner = hdul[1].data
+    with fits.open(asterism_filename) as hdul:
+        asterisms = hdul[1].data
+
+    asterism_num_stars = np.array(asterisms['num_stars'], dtype=np.int_)
+    best_ee = np.array(asterisms['best_ee'], dtype=np.float64)
+    mean_mag = np.vstack([
+        np.array(asterisms['star1_mag'], dtype=np.float64),
+        np.array(asterisms['star2_mag'], dtype=np.float64),
+        np.array(asterisms['star3_mag'], dtype=np.float64),
+    ])
+    mean_mag[mean_mag <= 0] = np.nan
+    mean_mag = np.nanmean(mean_mag, axis=0)
+
+    centre_ra = np.array(asterisms['ra'], dtype=np.float64)
+    centre_dec = np.array(asterisms['dec'], dtype=np.float64)
+    star_ras = [
+        np.array(asterisms['star1_ra'], dtype=np.float64),
+        np.array(asterisms['star2_ra'], dtype=np.float64),
+        np.array(asterisms['star3_ra'], dtype=np.float64),
+    ]
+    star_decs = [
+        np.array(asterisms['star1_dec'], dtype=np.float64),
+        np.array(asterisms['star2_dec'], dtype=np.float64),
+        np.array(asterisms['star3_dec'], dtype=np.float64),
+    ]
+    star_mags = [
+        np.array(asterisms['star1_mag'], dtype=np.float64),
+        np.array(asterisms['star2_mag'], dtype=np.float64),
+        np.array(asterisms['star3_mag'], dtype=np.float64),
+    ]
+
+    min_dist_catalog = np.full(len(asterisms), np.nan, dtype=np.float64)
+    for idx in range(len(asterisms)):
+        dists = []
+        for star_ra, star_dec, star_mag in zip(star_ras, star_decs, star_mags):
+            if star_mag[idx] <= 0:
+                continue
+            dx = (star_ra[idx] - centre_ra[idx]) * np.cos(np.deg2rad(centre_dec[idx])) * 3600.0
+            dy = (star_dec[idx] - centre_dec[idx]) * 3600.0
+            dists.append(np.hypot(dx, dy))
+        if len(dists) > 0:
+            min_dist_catalog[idx] = np.min(dists)
+
+    value_field = _get_asterism_ee_max_field_name(ao_system_name)
+    id_field = _get_asterism_ee_max_id_field_name(ao_system_name)
+    if value_field not in inner.names or id_field not in inner.names:
+        raise AOMapException(f"Required inner columns not found: {value_field}, {id_field}")
+
+    winner_ids = np.array(inner[id_field], dtype=np.float64)
+    winner_ee = np.array(inner[value_field], dtype=np.float64)
+    local_mask = np.isfinite(winner_ids) & np.isfinite(winner_ee)
+    winner_ids = winner_ids[local_mask].astype(np.int_)
+    winner_ee = winner_ee[local_mask]
+    winner_pixs = np.array(inner[FITS_COLUMN_PIX], dtype=np.int64)[local_mask]
+
+    inner_coords = healpix.get_pixel_skycoord(config.inner_level, pixs=winner_pixs)
+    inner_ra = np.array(inner_coords.ra.degree, dtype=np.float64)
+    inner_dec = np.array(inner_coords.dec.degree, dtype=np.float64)
+
+    asterism_ids = np.array(asterisms['id'], dtype=np.int_)
+    asterism_id_to_idx = {int(asterism_id): idx for idx, asterism_id in enumerate(asterism_ids)}
+    winner_idxs = np.array([asterism_id_to_idx[int(asterism_id)] for asterism_id in winner_ids], dtype=np.int_)
+    winner_num_stars = asterism_num_stars[winner_idxs]
+    winner_mean_mag = mean_mag[winner_idxs]
+
+    field_radius = ao_system['fov'].to(u.arcsec).value / 2.0
+    winner_min_dist = np.full(len(winner_idxs), np.nan, dtype=np.float64)
+    for row_idx, asterism_idx in enumerate(winner_idxs):
+        dists = []
+        for star_ra, star_dec, star_mag in zip(star_ras, star_decs, star_mags):
+            if star_mag[asterism_idx] <= 0:
+                continue
+            dx = (star_ra[asterism_idx] - inner_ra[row_idx]) * np.cos(np.deg2rad(inner_dec[row_idx])) * 3600.0
+            dy = (star_dec[asterism_idx] - inner_dec[row_idx]) * 3600.0
+            dist = np.hypot(dx, dy)
+            if dist <= field_radius + 1e-6:
+                dists.append(dist)
+        if len(dists) > 0:
+            winner_min_dist[row_idx] = np.min(dists)
+
+    def _corrcoef(xvals, yvals):
+        mask = np.isfinite(xvals) & np.isfinite(yvals)
+        if np.count_nonzero(mask) < 2:
+            return np.nan
+        return float(np.corrcoef(xvals[mask], yvals[mask])[0, 1])
+
+    all_counts_mask_catalog = np.isin(asterism_num_stars, star_counts)
+    all_counts_mask_winner = np.isin(winner_num_stars, star_counts)
+    catalog_valid_mask = all_counts_mask_catalog & np.isfinite(best_ee) & np.isfinite(mean_mag) & np.isfinite(min_dist_catalog)
+    winner_valid_mask = all_counts_mask_winner & np.isfinite(winner_ee) & np.isfinite(winner_mean_mag) & np.isfinite(winner_min_dist)
+    if np.count_nonzero(catalog_valid_mask) == 0 and np.count_nonzero(winner_valid_mask) == 0:
+        raise AOMapException(f"No valid diagnostic points found for {ao_system_name}")
+
+    def _limits(values):
+        finite_values = values[np.isfinite(values)]
+        if len(finite_values) == 0:
+            return (0.0, 1.0)
+        return (float(np.nanmin(finite_values)), float(np.nanmax(finite_values)))
+
+    if global_ranges:
+        xmag_min, xmag_max = _limits(np.concatenate([mean_mag[catalog_valid_mask], winner_mean_mag[winner_valid_mask]]))
+        xdist_min, xdist_max = _limits(np.concatenate([min_dist_catalog[catalog_valid_mask], winner_min_dist[winner_valid_mask]]))
+        ee_min, ee_max = _limits(np.concatenate([best_ee[catalog_valid_mask], winner_ee[winner_valid_mask]]))
+    else:
+        xmag_min = xmag_max = xdist_min = xdist_max = ee_min = ee_max = None
+
+    mag_pad = 0.05 * (xmag_max - xmag_min if global_ranges and xmag_max > xmag_min else 1.0)
+    dist_pad = 0.05 * (xdist_max - xdist_min if global_ranges and xdist_max > xdist_min else 1.0)
+    ee_pad = 0.05 * (ee_max - ee_min if global_ranges and ee_max > ee_min else 1.0)
+
+    diagnostics = {}
+    figures = {}
+    for star_count in star_counts:
+        catalog_mask = (asterism_num_stars == star_count) & np.isfinite(best_ee) & np.isfinite(mean_mag) & np.isfinite(min_dist_catalog)
+        winner_mask = (winner_num_stars == star_count) & np.isfinite(winner_ee) & np.isfinite(winner_mean_mag) & np.isfinite(winner_min_dist)
+
+        fig, axes = plt.subplots(2, 2, figsize=(10.5, 8.0), sharey=True, constrained_layout=True)
+        fig.suptitle(f'Outer Pixel {outer_pix}: {star_count}-Star Asterisms', fontsize=14)
+
+        panels = [
+            (0, 0, mean_mag[catalog_mask], best_ee[catalog_mask], 'Catalog Mean Model', 'Mean NGS Magnitude'),
+            (0, 1, winner_mean_mag[winner_mask], winner_ee[winner_mask], 'Resolved Inner-Pixel Winners', 'Mean NGS Magnitude'),
+            (1, 0, min_dist_catalog[catalog_mask], best_ee[catalog_mask], 'Catalog Mean Model', 'Min NGS Distance (arcsec)'),
+            (1, 1, winner_min_dist[winner_mask], winner_ee[winner_mask], 'Resolved Inner-Pixel Winners', 'Min In-FOV NGS Distance (arcsec)'),
+        ]
+
+        for row_idx, col_idx, xvals, yvals, title, xlabel in panels:
+            ax = axes[row_idx, col_idx]
+            ax.scatter(xvals, yvals, s=10, alpha=0.55, color='#b22222', edgecolors='none')
+            ax.set_title(f"{title}\nN={len(xvals)}, corr={_corrcoef(xvals, yvals):.3f}")
+            ax.set_xlabel(xlabel)
+            ax.grid(True, alpha=0.25)
+
+        axes[0, 0].set_ylabel('EE')
+        axes[1, 0].set_ylabel('EE')
+
+        if global_ranges:
+            axes[0, 0].set_xlim(xmag_min - mag_pad, xmag_max + mag_pad)
+            axes[0, 1].set_xlim(xmag_min - mag_pad, xmag_max + mag_pad)
+            axes[1, 0].set_xlim(xdist_min - dist_pad, xdist_max + dist_pad)
+            axes[1, 1].set_xlim(xdist_min - dist_pad, xdist_max + dist_pad)
+            for ax in axes.flat:
+                ax.set_ylim(ee_min - ee_pad, ee_max + ee_pad)
+
+        diagnostics[star_count] = {
+            'catalog_n': int(np.count_nonzero(catalog_mask)),
+            'winner_n': int(np.count_nonzero(winner_mask)),
+            'catalog_mag_corr': _corrcoef(mean_mag[catalog_mask], best_ee[catalog_mask]),
+            'winner_mag_corr': _corrcoef(winner_mean_mag[winner_mask], winner_ee[winner_mask]),
+            'catalog_dist_corr': _corrcoef(min_dist_catalog[catalog_mask], best_ee[catalog_mask]),
+            'winner_dist_corr': _corrcoef(winner_min_dist[winner_mask], winner_ee[winner_mask]),
+        }
+
+        if filename_prefix is not None:
+            filename = f"{filename_prefix}-{star_count}star.png"
+            dirname = os.path.dirname(filename)
+            if dirname:
+                os.makedirs(dirname, exist_ok=True)
+            fig.savefig(filename, dpi=180)
+            diagnostics[star_count]['filename'] = filename
+
+        if return_figs:
+            figures[star_count] = fig
+        elif filename_prefix is None:
+            plt.show()
+        else:
+            plt.close(fig)
+
+    if return_figs:
+        return diagnostics, figures
+    return diagnostics
 
 #endregion

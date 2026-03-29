@@ -1,13 +1,20 @@
 folder: ../data/maps
-cores: 5                      #  1: no parallelism, >1: number of cores, -1: all cores
-chunk_multiple: 5             #  0: skip chunking, chunk_size = cores * chunk_multiple = number of pixels computed between updates to disk
-outer_level: 6                #  6: 55 arcmin resolution
-max_data_level: 9             #  9:  7 arcmin resolution
-inner_level: 14               # 14: 13 arcsec resolution
-asterism_epoch: 2028.0        # epoch for star coordinates
+cores: 5                            #  build_inner: worker processes; append_asterism_stats: inference threads; -1: all cores
+chunk_multiple: 5                   #  0: skip chunking, chunk_size = cores * chunk_multiple = number of pixels computed between updates to disk
+outer_level: 6                      #  6: 55 arcmin resolution
+max_data_level: 9                   #  9:  7 arcmin resolution
+inner_level: 14                     # 14: 13 arcsec resolution
+asterism_epoch: 2028.0              # epoch for star coordinates
+prediction_wavelength: 1.654        # [micron]
+seeing_reference_wavelength: 0.5    # [micron]
+seeing_reference_sr: 0.0            # dimensionless
+seeing_reference_ee: 0.02           # dimensionless
+seeing_reference_fwhm: 650.0        # [mas] = 0.65 arcsec
+coverage_ee_threshold_resolved: 0.4 # Empirically splits on-axis EE; selects strong resolved-performance regime
+coverage_ee_threshold_mean: 0.3     # Empirical mean-EE floor; marks AO-present vs AO-absent regimes
 
-#build_level: 1                # limit building to specific level
-#build_pixs: 26                # limit building to specific pixels
+#build_level: 1                     # limit building to specific level
+#build_pixs: 26                     # limit building to specific pixels
 
 ao_systems:
   # - name: GNAO-Limit
@@ -78,8 +85,8 @@ ao_systems:
       1star: ao_model_rnd_1star_1024-512-256
       2star: ao_model_rnd_2star_1024-512-256
       3star: ao_model_rnd_3star_1024-512-256
-    rot_range: [0.0, 45.0] # [degrees]
-    rot_step: 1.0 # [degrees]
+    rot_range: null #[0.0, 45.0] # [degrees]
+    rot_step: null  #1.0 # [degrees]
 max_dust_extinction: 0.3    # Av
 min_ecliptic_latitude: 15.0 # degree
 
