@@ -6,6 +6,7 @@
 
 import copy
 from logging import warning
+import warnings
 import matplotlib as mpl
 from matplotlib import pyplot as plt
 from mpl_toolkits.axisartist import angle_helper
@@ -137,7 +138,13 @@ def get_parent_pixel(level, pix, outer_level):
     return pix // 4**(level - outer_level)
 
 def get_neighbours(level, pixs):
-    return healpix.neighbours(pixs, _get_nside(level), order='nested')
+    # Boundary HEALPix cells can have fewer than 8 neighbours. astropy_healpix
+    # encodes missing neighbours as -1 and may emit a benign NumPy runtime
+    # warning while constructing the result. Downstream code already ignores
+    # negative neighbour ids, so suppress only this specific warning here.
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', message='invalid value encountered in neighbours_nested', category=RuntimeWarning)
+        return healpix.neighbours(pixs, _get_nside(level), order='nested')
 
 def get_subpixel_npix(outer_level, inner_level):
     return 4**(inner_level - outer_level)
