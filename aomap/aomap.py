@@ -23,7 +23,7 @@ from dustmaps.config import config as dustmaps_config
 import dustmaps.gaia_tge as gaia_tge
 from joblib import Parallel, delayed
 from survey_tools import asterism, gaia, healpix
-from ao_tools import training
+from survey_tools._optional_ao_tools import get_training_module
 
 #region Globals
 
@@ -1199,6 +1199,7 @@ def find_outer_asterisms(config, outer_pix, ao_system_name, skip_overlaps=False,
 model_cache = {}
 
 def _load_models(ao_systems):
+    training = get_training_module()
     model_cache = {}
     for ao_system in ao_systems:
         model_cache[ao_system['name']] = {}
@@ -1207,6 +1208,8 @@ def _load_models(ao_systems):
             model_cache[ao_system['name']][key] = model
 
 def _get_asterisms_EE(asterisms, ao_system, batch_size=10000):
+    training = get_training_module()
+
     if 'models' not in ao_system or len(ao_system['models']) == 0:
         raise AOMapException("No models found in ao_system")
 

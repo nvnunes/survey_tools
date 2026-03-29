@@ -16,13 +16,14 @@ from scipy.interpolate import interp1d
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import find_peaks, peak_widths # pylint: disable=no-name-in-module
 from scipy.stats import norm 
-from ao_tools import etc
 
 class StructType:
     pass
 
 class AtmosphereException(Exception):
     pass
+
+FWHM2SIGMA = 1.0 / (2 * np.sqrt(2 * np.log(2)))
 
 def get_default_data_path():
     data_path = f"{pathlib.Path(__file__).parent.parent.resolve()}/data/sky"
@@ -92,24 +93,6 @@ def _set_wvl_unit(wvl, wvl_range, return_unitless=False):
 
     return wvl, wvl_range
 
-def load_transmission_data(wvl, instrument='GIRMOS', R=3000, zenith_angle=20*u.deg, water_vapor=1.6*u.mm, return_interp=False):
-    options = etc.get_minimal_sky_options(wvl, instrument=instrument, R=R, zenith_angle=zenith_angle, water_vapor=water_vapor)
-    if return_interp:
-        data, interp_func = etc.load_sky_transmission(options, return_interp=True)
-        return data, interp_func
-    else:
-        data = etc.load_sky_transmission(options)
-        return data
-
-def load_background_data(wvl, instrument='GIRMOS', R=3000, zenith_angle=20*u.deg, water_vapor=1.6*u.mm, return_interp=False):
-    options = etc.get_minimal_sky_options(wvl, instrument=instrument, R=R, zenith_angle=zenith_angle, water_vapor=water_vapor)
-    if return_interp:
-        data, interp_func = etc.load_sky_background(options, return_interp=True)
-        return data, interp_func
-    else:
-        data = etc.load_sky_background(options)
-        return data
-
 def get_vacuum_to_air_wavelength(wavelength):
     if isinstance(wavelength, u.Quantity):
         w = wavelength.to(u.angstrom).value
@@ -154,7 +137,7 @@ def get_mean_transmission(transmission_data, wvl0, fwhm, truncate_sigma=4.0, is_
     wvl0, _ = _set_wvl_unit(wvl0, None, return_unitless=True)                   # () or (K,)
     fwhm, _ = _set_wvl_unit(fwhm, None, return_unitless=True)                   # () or (K,)
     wvl0, fwhm = np.broadcast_arrays(np.atleast_1d(wvl0), np.atleast_1d(fwhm))  # (K,), (K,)
-    sigma = fwhm * etc.Constants.fwhm2sigma                                     # (K,)
+    sigma = fwhm * FWHM2SIGMA                                                   # (K,)
 
     wvl = transmission_data['wavelength']                                       # (M,)
     trans = transmission_data['transmission_lo']                                # (M,)
@@ -239,171 +222,6 @@ def find_sky_lines(
     )
 
     return sky_lines
-
-def _make_2d_like(arr, target_shape_nm):
-    """Broadcast arr (scalar, (N,), (M,), or (N,M)) to (N,M)."""
-    N, M = target_shape_nm
-    if isinstance(arr, u.Quantity):
-        units = arr.unit
-    else:
-        units = None
-
-    a = np.asarray(arr) if arr is not None else None
-    if a is None:
-        out = None
-    elif a.ndim == 0:
-        out = np.full((N, M), a)
-    elif a.ndim == 1:
-        if a.shape[0] == N:
-            out = np.repeat(a[:, None], M, axis=1)
-        elif a.shape[0] == M:
-            out = np.repeat(a[None, :], N, axis=0)
-        else:
-            raise ValueError(f"1D array length {a.shape[0]} cannot broadcast to (N,M)=({N},{M}).")
-    elif a.ndim == 2:
-        if a.shape != (N, M):
-            raise ValueError(f"2D array shape {a.shape} must equal (N,M)=({N},{M}).")
-        out = a
-    else:
-        raise ValueError("Input must be scalar, 1D, or 2D.")
-
-    if out is not None and units is not None:
-        return out * units
-    else:
-        return out
-
-def reject_emission_line(
-        etc_params, flux, wvl, dispersion, eta_spat=0.01,
-        snr_threshold = 3.0,
-        return_snr=False,
-        return_ENBW=False,
-        return_signals=False,
-        spec_wvl=None,
-        include_fit_error_adjustment=False,
-):
-    """
-    Reject a line if its matched-filter S/N (with source+background shot noise) < snr_threshold,
-    or if it falls outside allowed ranges.
-
-    Parameters:
-      - etc_params    : parameters for ETC calculations
-      - flux          : total line flux [erg/s/cm^2] (scalar, (N,), (M,), or (N,M))
-      - wvl           : wavelength(s) to check (scalar, (N,), or (N,M))
-      - dispersion    : intrinsic line dispersion (scalar, (N,), (M,), or (N,M))
-      - eta_spat      : spatial efficiency (fraction of light in aperture)
-      - snr_threshold : minimum S/N to accept, default=3 is minimum required to detect line flux
-      - return_snr
-      - return_ENBW
-      - return_signals
-      - spec_wvl      : used only if return_rates=True; wavelength grid of the full spectrum for computing Ndot_sky and Ndot_source [nm]
-      - include_fit_error_adjustment: if True, include the fit error adjustment factor in the noise calculation
-    """
-
-    wvl, wvl_ranges = _set_wvl_unit(wvl, etc_params['bands'])
-    dispersion      = dispersion.to(u.km/u.s)
-
-    # Standardized Gaussian sampling grid
-    # u_std, w_std = etc.precompute_gaussian_standardized_grid()
-
-    # Coerce wvl to (N,M)
-    orig_shape = wvl.shape
-    if wvl.ndim == 0:
-        wvl = wvl.reshape(1, 1)
-    elif wvl.ndim == 1:
-        if np.size(snr_threshold) == 1:
-            wvl = wvl[:, None]
-        else:
-            wvl = wvl[None, :]
-    elif wvl.ndim > 2:
-        raise ValueError("wvl must be scalar, 1D, or 2D.")
-    N, M = wvl.shape
-
-    # Broadcast fwhm and A (total observed line rate per spaxel) to (N,M)
-    dispersion     = _make_2d_like(dispersion, (N, M))
-    flux           = _make_2d_like(flux, (N, M))
-    eta_spat       = _make_2d_like(eta_spat, (N, M))
-    snr_thresholds = np.broadcast_to(snr_threshold, (M,))
-
-    # Create results mask
-    rejects = np.ones((N, M), dtype=bool)
-    snr = np.full((N, M), np.nan)
-    
-    if return_signals:
-        ENBW_wvl = np.full((N, M), np.nan) * get_wavelength_unit()
-
-    if return_signals:
-        if spec_wvl is None:
-            raise ValueError("Either spec_wvl or sky_data must be provided if return_counts=True.")
-        N_signal = np.full((len(spec_wvl), M), np.nan) * u.electron
-        N_noise  = np.full((len(spec_wvl), M), np.nan) * u.electron
-
-    for j in range(M):
-        if wvl_ranges is None:
-            valid = np.ones(wvl.shape[0], dtype=bool)
-        elif wvl_ranges.ndim == 1:
-            lo, hi = wvl_ranges[0], wvl_ranges[1]
-            valid = (wvl[:, j] >= lo) & (wvl[:, j] <= hi)
-        elif wvl_ranges.ndim == 2 and wvl_ranges.shape[1] == 2:
-            x  = wvl[:, j][..., None]      # (N, 1)
-            lo = wvl_ranges[:, 0]          # (K,)
-            hi = wvl_ranges[:, 1]          # (K,)
-            valid = ((x >= lo) & (x <= hi)).any(axis=-1)  # (N,)
-        else:
-            raise ValueError("ranges must be None, [lo, hi], or (K, 2).")
-
-        data = {
-            'flux': flux[:,j],
-            'wvl0': wvl[:,j],
-            'dispersion': dispersion[:,j],
-            'eta_spat': eta_spat[:,j],
-        }
-
-        snr[:, j], etc_details = etc.estimate_emission_line_flux_fit_snr(etc_params, data, return_etc_details=True)
-        rejects[:, j] = (snr[:, j] < snr_thresholds[j]) | (~valid)
-
-        if return_ENBW:
-            ENBW_wvl[:, j] = etc_details['ENBW'] * etc_details['wvl_step']  # [nm]
-
-        if return_signals:
-            spec_wvl, _ = _set_wvl_unit(spec_wvl, None)
-            N_signal[:, j], N_noise[:, j] = etc.estimate_signal_spectrum(spec_wvl, etc_details, include_fit_error_adjustment=include_fit_error_adjustment)
-
-    # Match caller's input shape
-    return_values = []
-    if len(orig_shape) == 0:      # scalar
-        return_values.append(rejects.item())
-    elif len(orig_shape) == 1:    # (N,)
-        return_values.append(rejects.flatten())
-    else:
-        return_values.append(rejects)
-
-    # Return S/N if requested
-    if return_snr:
-        if len(orig_shape) == 0:      # scalar
-            return_values.append(snr.item())
-        elif len(orig_shape) == 1:    # (N,)
-            return_values.append(snr.flatten())
-        else:
-            return_values.append(snr)
-
-    # Return sigma_eff if requested
-    if return_ENBW:
-        if len(orig_shape) == 0:      # scalar
-            return_values.append(ENBW_wvl.item())
-        elif len(orig_shape) == 1:    # (N,)
-            return_values.append(ENBW_wvl.flatten())
-        else:
-            return_values.append(ENBW_wvl)
-
-    # Compute counts if requested
-    if return_signals:
-        return_values.append(N_signal)
-        return_values.append(N_noise)
-
-    if len(return_values) == 1:
-        return return_values[0]
-    else:
-        return tuple(return_values)
 
 #region Deprecate
 
@@ -503,7 +321,7 @@ def _convolve_with_gaussian(R, data_hi, field_name, field_unit=None, wvl_range=N
         wvl = wvl[wvl_filter_wide]
         value_hi = value_hi[wvl_filter_wide]
 
-    sigma = dlambda * etc.Constants.fwhm2sigma
+    sigma = dlambda * FWHM2SIGMA
     fudge_factor = 1.2 # Compensates for underestimation of total sky background power due to low resolution of input data
     sigma_bins = sigma / wvl_step / fudge_factor
     value_lo = gaussian_filter1d(value_hi, sigma_bins, mode='reflect')

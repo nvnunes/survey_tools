@@ -12,8 +12,8 @@ import numpy as np
 import aomap
 from astropy.table import Table, vstack
 from survey_tools import asterism, healpix
+from survey_tools._optional_ao_tools import get_training_module
 from survey_tools.utility.table import has_field
-from ao_tools import training
 
 parser = argparse.ArgumentParser(description="Export asterisms for AO map.")
 parser.add_argument('--output-path', type=str, default='../output', help='Output directory path')
@@ -86,6 +86,8 @@ for ao_system in config.ao_systems:
             print('  No asterisms found.')
 
     if not skip_ao:
+        training = get_training_module()
+
         if 'asterisms' not in locals():
             asterisms = Table.read(filename)
         

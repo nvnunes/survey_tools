@@ -24,15 +24,14 @@ dependencies = [
     "tabulate",
     "astropy-healpix",
     "joblib",
-    "skyproj >= 2.0.0",
+    "skyproj==2.0.3",
     "photutils",
     "dust_extinction",
     "dustmaps",
     "mocpy",
     "shapely",
     "reproject",
-    "vorbin",
-    "girmos-aosims @ git+ssh://git@github.com/nvnunes/girmos-aosims.git@develop"
+    "vorbin"
 ]
 dynamic = ["version"]
 
