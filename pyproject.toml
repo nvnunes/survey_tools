@@ -36,8 +36,10 @@ dependencies = [
 ]
 dynamic = ["version"]
 
-[tool.setuptools.packages]
-find = {namespaces = false}
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["survey_tools", "survey_tools.*", "aomap", "aomap.*"]
+namespaces = false
 
 [tool.setuptools_scm]
 write_to = "survey_tools/_version.py"

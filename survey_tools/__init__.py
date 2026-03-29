@@ -1,5 +1,6 @@
 __all__ = [
     'asterism',
+    'aomap',
     'catalog',
     'gaia',
     'healpix',
