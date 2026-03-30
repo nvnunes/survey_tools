@@ -9,6 +9,7 @@ from logging import warning
 import warnings
 import matplotlib as mpl
 from matplotlib import pyplot as plt
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 from mpl_toolkits.axisartist import angle_helper
 import numpy as np
 from astropy.table import Table
@@ -1257,19 +1258,49 @@ def _draw_cbar(
     if not cbar or vmin is None or vmax is None:
         return
 
-    cb = sp.draw_colorbar(
-        ticks=cbar_ticks,
-        format=cbar_format,
-        fontsize=fontsize['cbar_tick_label'],
-        location='bottom' if cbar_orientation == 'horizontal' else 'right',
-        shrink=cbar_shrink,
-        pad=cbar_pad
-    )
+    location = 'bottom' if cbar_orientation == 'horizontal' else 'right'
+    ax = getattr(sp, '_ax', None)
+    cax = None
 
-    if cbar_format is not None:
-        cb.minorformatter = mpl.ticker.FormatStrFormatter(cbar_format)
+    if ax is not None:
+        divider = make_axes_locatable(ax)
+        if cbar_orientation == 'horizontal':
+            cax = divider.append_axes('bottom', size='2.5%', pad=cbar_pad, axes_class=plt.Axes)
+        else:
+            cax = divider.append_axes('right', size='2.5%', pad=cbar_pad, axes_class=plt.Axes)
 
-    cb.set_label(label=cbar_unit, fontsize=fontsize['cbar_label'])
+    if cax is not None and ax is not None:
+        cb = ax.figure.colorbar(
+            ax._gci(),
+            cax=cax,
+            ticks=cbar_ticks,
+            format=cbar_format,
+        )
+
+        if location in ('right', 'left'):
+            cbar_axis = 'y'
+        else:
+            cbar_axis = 'x'
+
+        cb.ax.tick_params(axis=cbar_axis, labelsize=fontsize['cbar_tick_label'])
+        cb.set_label(label=cbar_unit, fontsize=fontsize['cbar_label'])
+        ax.figure.sca(ax)
+    else:
+        cb = sp.draw_colorbar(
+            ticks=cbar_ticks,
+            format=cbar_format,
+            fontsize=fontsize['cbar_tick_label'],
+            location=location,
+            shrink=cbar_shrink,
+            pad=cbar_pad,
+            ax=ax,
+            cax=cax,
+        )
+
+        if cbar_format is not None:
+            cb.minorformatter = mpl.ticker.FormatStrFormatter(cbar_format)
+
+        cb.set_label(label=cbar_unit, fontsize=fontsize['cbar_label'])
 
     # Adding the cbar affects the plot, so we cannot skip the above.
     # Instead we remove it afterwards if needed.
