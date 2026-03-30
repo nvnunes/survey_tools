@@ -2386,9 +2386,11 @@ def plot_map(map_data=None,
             stars=None,                    # plot stars over map
             asterisms=None,                # plot asterisms over map
             cbar=True,                     # display the colorbar
+            cbar_orientation=None,         # colorbar orientation
             cbar_ticks=None,               # colorbar ticks
             cbar_format=None,              # colorbar number format
             cbar_unit=None,                # colorbar unit
+            cbar_pad=None,                 # colorbar padding
             boundaries_level=None,         # HEALpix level for boundaries
             boundaries_pixs=None,          # HEALpix pixels for boundaries
             title=None,                    # plot title
@@ -2486,11 +2488,11 @@ def plot_map(map_data=None,
     if norm is not None and vmax is not None:
         values[values > vmax] = vmax
 
-    if norm is not None and 'log' in norm and values is not None and np.any(values <= 0):
+    if isinstance(norm, str) and 'log' in norm and values is not None and np.any(values <= 0):
         values = values.astype(float, copy=True)
         values[values <= 0.0] = np.nan
 
-    if contour_values is not None and contour_norm is not None and 'log' in contour_norm and contour_values is not None and np.any(contour_values <= 0):
+    if contour_values is not None and isinstance(contour_norm, str) and 'log' in contour_norm and contour_values is not None and np.any(contour_values <= 0):
         contour_values = contour_values.astype(float, copy=True)
         contour_values[contour_values <= 0.0] = np.nan
 
@@ -2540,9 +2542,11 @@ def plot_map(map_data=None,
         'grid': grid,
         'grid_longitude': grid_longitude,
         'cbar': cbar,
+        'cbar_orientation': cbar_orientation,
         'cbar_ticks': cbar_ticks,
         'cbar_format': cbar_format,
         'cbar_unit': cbar_unit,
+        'cbar_pad': cbar_pad,
         'boundaries_level': boundaries_level,
         'boundaries_pixs': boundaries_pixs,
         'title': title,
