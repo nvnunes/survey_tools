@@ -370,10 +370,15 @@ def build_inner(config_or_filename, mode='recalc', pixs=None, force_reload_gaia=
     todo = np.zeros((npix), dtype=bool)
     if pixs is not None:
         todo[pixs] = True
+    elif mode == 'build':
+        if build_pixs is not None:
+            todo[build_pixs] = ~done[build_pixs] & ~excluded[build_pixs]
+        else:
+            todo = ~done & ~excluded
     elif build_pixs is not None:
-        todo[build_pixs] = ~done[build_pixs] & ~excluded[build_pixs]
+        todo[build_pixs] = True
     else:
-        todo = ~done & ~excluded
+        todo[:] = True
 
     if np.all(todo):
         todo_pix = np.arange(npix)
@@ -382,7 +387,8 @@ def build_inner(config_or_filename, mode='recalc', pixs=None, force_reload_gaia=
 
     if len(todo_pix) == 0:
         print(f"Building inner pixels at level {config.inner_level} already done")
-        return
+        outer.close()
+        return False
 
     if build_pixs is not None:
         print(f"Building total of {len(todo_pix)}/{len(build_pixs)} outer pixs")
@@ -401,6 +407,7 @@ def build_inner(config_or_filename, mode='recalc', pixs=None, force_reload_gaia=
 
     start_time = time.time()
     last_time = start_time
+    did_work = False
 
     def warmup():
         # build_inner parallelizes over outer pixels, so keep each worker's inference
@@ -427,12 +434,14 @@ def build_inner(config_or_filename, mode='recalc', pixs=None, force_reload_gaia=
                 excluded[outer_pix] = results[1]
                 num_excluded += results[1]
                 num_asterisms += results[2]
+                did_work = did_work or results[0]
         else:
             results = np.array(parallel_pool(delayed(_build_outer_pix)(config, mode, outer_pix, force_reload_gaia, verbose) for outer_pix in todo_pix[start_idx:end_idx]))
             done[todo_pix[start_idx:end_idx]] = results[:,0]
             excluded[todo_pix[start_idx:end_idx]] = results[:,1]
             num_excluded = np.sum(results[:,1])
             num_asterisms = np.sum(results[:,2])
+            did_work = did_work or np.any(results[:,0])
 
         outer.flush()
 
@@ -445,6 +454,7 @@ def build_inner(config_or_filename, mode='recalc', pixs=None, force_reload_gaia=
     print(f"\n  done: {num_todo}px in {total_time:.1f}s")
 
     outer.close()
+    return did_work
 
 def append_asterism_dust(config_or_filename, mode='build', pixs=None, verbose = False): # pylint: disable=unused-argument
     config = read_config(config_or_filename)
@@ -518,6 +528,8 @@ def append_asterism_stats(config_or_filename, mode='build', pixs=None, verbose =
     start_time = time.time()
     last_time = start_time
     count = 0
+    num_skipped = 0
+    did_work = False
 
     for i in range(num_chunks):
         if pixs is not None:
@@ -531,6 +543,10 @@ def append_asterism_stats(config_or_filename, mode='build', pixs=None, verbose =
         for outer_pix in chunk_pixs:
             count += 1
             inner_data = _load_inner(config, outer_pix, update=True)
+            if mode == 'build' and _has_complete_asterism_stats(inner_data, config.ao_systems):
+                num_skipped += 1
+                inner_data.close()
+                continue
 
             for ao_system in config.ao_systems:
                 asterism_count = _get_inner_pixel_asterism_count(config, outer_pix, ao_system)
@@ -583,14 +599,16 @@ def append_asterism_stats(config_or_filename, mode='build', pixs=None, verbose =
                 inner_data.flush()
 
             inner_data.close()
+            did_work = True
 
         elapsed_time = time.time() - last_time
         last_time = time.time()
         current_time = time.strftime("%H:%M:%S", time.localtime())
-        print(f"\r  {current_time}: {count}/{npix} ({len(chunk_pixs)}px in {elapsed_time:.2f}s)          ", end='', flush=True)
+        print(f"\r  {current_time}: {count}/{npix} ({len(chunk_pixs)}px in {elapsed_time:.2f}s, {num_skipped} skipped)          ", end='', flush=True)
 
     total_time = time.time() - start_time
     print(f"\n  done: {npix}px in {total_time:.1f}s")
+    return did_work
 
 def build_data(config_or_filename, mode='build', verbose = False): # pylint: disable=unused-argument
     config = read_config(config_or_filename)
@@ -610,7 +628,7 @@ def build_data(config_or_filename, mode='build', verbose = False): # pylint: dis
 
     if len(levels) == 0:
         print(f"Building data for levels {config.outer_level}-{config.max_data_level} already done")
-        return
+        return False
 
     dust = _get_dust()
 
@@ -652,22 +670,10 @@ def build_data(config_or_filename, mode='build', verbose = False): # pylint: dis
 
     for data in level_data:
         data.close()
+    return True
 
-def build_survey_extent(config_or_filename, verbose = False): # pylint: disable=unused-argument
-    config = read_config(config_or_filename)
-
-    levels = []
-    level_data = []
-    for level in range(config.outer_level, config.max_data_level+1):
-        levels.append(level)
-        level_data.append(_load_data(config, level, update=True))
-
-    if len(levels) == 1:
-        print(f"Appending survey extent for level {levels}:")
-    else:
-        print(f"Appending survey extent for levels {levels[0]}-{levels[-1]}:")
-
-    surveys = [
+def _get_survey_extent_specs():
+    return [
         ['ews', [
             "../data//euclid/rsd2024a-footprint-equ-13-year1-MOC.fits",
             "../data//euclid/rsd2024a-footprint-equ-13-year2-MOC.fits",
@@ -687,6 +693,33 @@ def build_survey_extent(config_or_filename, verbose = False): # pylint: disable=
         ['edf-south', "../data//euclid/EuclidMOC_EDFS_rsd2024c_depth13_atLeast2visitsPlanned.fits"],
         ['edf-fornax', "../data//euclid/EuclidMOC_EDFF_rsd2024c_depth13_atLeast2visitsPlanned.fits"]
     ]
+
+def build_survey_extent(config_or_filename, mode='build', verbose = False): # pylint: disable=unused-argument
+    config = read_config(config_or_filename)
+
+    surveys = _get_survey_extent_specs()
+    levels = []
+    level_data = []
+    for level in range(config.outer_level, config.max_data_level+1):
+        levels.append(level)
+        level_data.append(_load_data(config, level, update=True))
+
+    if mode == 'build':
+        expected_columns = {_get_survey_column(survey[0]) for survey in surveys}
+        complete = all(expected_columns.issubset(set(data[1].columns.names)) for data in level_data) # pylint: disable=no-member
+        if complete:
+            if len(level_data) == 1:
+                print(f"Survey extent for level {levels} already done")
+            else:
+                print(f"Survey extent for levels {levels[0]}-{levels[-1]} already done")
+            for data in level_data:
+                data.close()
+            return False
+
+    if len(levels) == 1:
+        print(f"Appending survey extent for level {levels}:")
+    else:
+        print(f"Appending survey extent for levels {levels[0]}-{levels[-1]}:")
 
     start_time = time.time()
 
@@ -711,6 +744,7 @@ def build_survey_extent(config_or_filename, verbose = False): # pylint: disable=
 
     for data in level_data:
         data.close()
+    return True
 
 def _get_dust():
     dustmaps_config.reset()
@@ -1040,6 +1074,27 @@ def _get_asterism_ee_max_distance_field(ao_system):
 
 def _get_asterism_fwhm_min_field(ao_system):
     return f"{FITS_COLUMN_ASTERISM_FWHM_MIN_PREFIX}_{_get_field_from_key(ao_system['name'])}"
+
+def _get_managed_asterism_stats_fields(ao_system):
+    return [
+        _get_asterism_count_field(ao_system),
+        _get_asterism_coverage_field(ao_system),
+        _get_asterism_coverage_resolved_field(ao_system),
+        _get_asterism_coverage_mean_field(ao_system),
+        _get_asterism_sr_max_field(ao_system),
+        _get_asterism_ee_max_field(ao_system),
+        _get_asterism_ee_max_field_mean_field(ao_system),
+        _get_asterism_ee_max_id_field(ao_system),
+        _get_asterism_ee_max_distance_field(ao_system),
+        _get_asterism_fwhm_min_field(ao_system)
+    ]
+
+def _has_complete_asterism_stats(inner_data, ao_systems):
+    columns = set(inner_data[1].columns.names) # pylint: disable=no-member
+    for ao_system in ao_systems:
+        if not set(_get_managed_asterism_stats_fields(ao_system)).issubset(columns):
+            return False
+    return True
 
 def _create_inner(config, outer_pix, num_retries=3, force_reload_gaia=False):
     # Compute Galaxy Density Model

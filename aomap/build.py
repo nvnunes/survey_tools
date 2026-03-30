@@ -10,10 +10,9 @@ import os
 
 ####################################################################################
 # Build Modes:
-#     build  : continue building inner pixel data and calculating outer pixel values
-#              (supports incremental building)
-#     rebuild: rebuilds inner pixel data and recalculates outer pixel values
-#     recalc : only recalculates outer pixel values using existing inner pixel data
+#     build  : only do missing/incomplete work; promote downstream stages if inputs changed
+#     rebuild: rebuilds everything unconditionally
+#     recalc : recomputes everything downstream from existing source data
 ####################################################################################
 
 parser = argparse.ArgumentParser(description="Build AO map data.")
@@ -27,8 +26,16 @@ verbose = args.verbose
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 config = aomap.read_config('config.yaml')
 
-aomap.build_inner(config, mode=mode, verbose=verbose)
-aomap.append_asterism_dust(config, mode=mode, verbose=verbose)
-aomap.append_asterism_stats(config, mode=mode, verbose=verbose)
-aomap.build_data(config, mode=mode, verbose=verbose)
-aomap.build_survey_extent(config, verbose=verbose)
+did_work = aomap.build_inner(config, mode=mode, force_reload_gaia=(mode == 'rebuild'), verbose=verbose)
+if mode == 'build' and did_work:
+    mode = 'recalc'
+
+did_work = aomap.append_asterism_stats(config, mode=mode, verbose=verbose)
+if mode == 'build' and did_work:
+    mode = 'recalc'
+
+did_work = aomap.build_data(config, mode=mode, verbose=verbose)
+if mode == 'build' and did_work:
+    mode = 'recalc'
+
+aomap.build_survey_extent(config, mode=mode, verbose=verbose)
