@@ -997,9 +997,14 @@ def _draw_points(
 
         if points_ra_dec.shape[1] >= 3 and isinstance(points_ra_dec[0, 2], str):
             labels = points_ra_dec[:, 2]
+            if points_ra_dec.shape[1] >= 5:
+                label_offsets = points_ra_dec[:, 3:5].astype(float)
+            else:
+                label_offsets = None
             points_ra_dec = points_ra_dec[:, 0:2].astype(float)
         else:
             labels = None
+            label_offsets = None
 
         if len(p) > 2 and isinstance(p[2], dict):
             text_styles = p[2]
@@ -1017,6 +1022,7 @@ def _draw_points(
 
             points_ra_dec = points_ra_dec[points_filter,:]
             labels = labels[points_filter] if labels is not None else None
+            label_offsets = label_offsets[points_filter] if label_offsets is not None else None
 
         if isinstance(p, list) and len(p) >= 2 and isinstance(p[1], dict):
             scatter_options = p[1]
@@ -1053,12 +1059,16 @@ def _draw_points(
             plt.scatter(points_icrs.galactic.l.degree, points_icrs.galactic.b.degree, **scatter_options)
             if labels is not None:
                 for i, label in enumerate(labels):
-                    plt.text(points_icrs.galactic.l.degree[i]+label_space, points_icrs.galactic.b.degree[i], label, color=label_color, fontsize=fontsize['points_label'], fontweight='bold', ha='right', **text_styles)
+                    label_dx = label_offsets[i, 0] if label_offsets is not None else label_space
+                    label_dy = label_offsets[i, 1] if label_offsets is not None else 0.0
+                    plt.text(points_icrs.galactic.l.degree[i] + label_dx, points_icrs.galactic.b.degree[i] + label_dy, label, color=label_color, fontsize=fontsize['points_label'], fontweight='bold', ha='right', **text_styles)
         else:
             plt.scatter(points_ra_dec[:,0], points_ra_dec[:,1], **scatter_options)
             if labels is not None:
                 for i, label in enumerate(labels):
-                    plt.text(points_ra_dec[i, 0]+label_space, points_ra_dec[i, 1], label, color=label_color, fontsize=fontsize['points_label'], fontweight='bold', ha='right', **text_styles)
+                    label_dx = label_offsets[i, 0] if label_offsets is not None else label_space
+                    label_dy = label_offsets[i, 1] if label_offsets is not None else 0.0
+                    plt.text(points_ra_dec[i, 0] + label_dx, points_ra_dec[i, 1] + label_dy, label, color=label_color, fontsize=fontsize['points_label'], fontweight='bold', ha='right', **text_styles)
 
 def _draw_stars(
         sp=None,
@@ -1073,70 +1083,116 @@ def _draw_stars(
     if stars is None:
         return
 
-    if not isinstance(stars, Table):
-        if isinstance(stars, list) and len(stars) >= 2 and isinstance(stars[0], Table) and isinstance(stars[1], dict):
-            scatter_options = stars[1]
-            stars = stars[0]
+    def _get_marker_sizes(magnitudes, *, min_mag, max_mag, min_size, max_size, size_map):
+        clipped_magnitudes = np.maximum(min_mag, np.minimum(max_mag, magnitudes))
+
+        if size_map == 'linear':
+            relative_sizes = (max_mag - clipped_magnitudes) / (max_mag - min_mag)
+        elif size_map in ('flux', 'sqrt_flux'):
+            fluxes = np.power(10.0, -0.4 * clipped_magnitudes)
+            min_flux = np.power(10.0, -0.4 * max_mag)
+            max_flux = np.power(10.0, -0.4 * min_mag)
+            if size_map == 'sqrt_flux':
+                fluxes = np.sqrt(fluxes)
+                min_flux = np.sqrt(min_flux)
+                max_flux = np.sqrt(max_flux)
+            relative_sizes = (fluxes - min_flux) / (max_flux - min_flux)
         else:
-            raise HealpixException('stars must be an Astropy Table')
+            raise HealpixException(f"Unsupported star size_map '{size_map}'")
+
+        return min_size + (max_size - min_size) * relative_sizes
+
+    if isinstance(stars, Table):
+        star_layers = [(stars, {})]
+    elif isinstance(stars, list) and len(stars) >= 2 and isinstance(stars[0], Table) and isinstance(stars[1], dict):
+        star_layers = [(stars[0], stars[1])]
+    elif isinstance(stars, list):
+        star_layers = []
+        for star_layer in stars:
+            if not (
+                isinstance(star_layer, list)
+                and len(star_layer) >= 2
+                and isinstance(star_layer[0], Table)
+                and isinstance(star_layer[1], dict)
+            ):
+                raise HealpixException('stars must be an Astropy Table, [Table, dict], or list of [Table, dict]')
+            star_layers.append((star_layer[0], star_layer[1]))
     else:
-        scatter_options = {}
+        raise HealpixException('stars must be an Astropy Table, [Table, dict], or list of [Table, dict]')
 
-    if len(stars) == 0:
-        return
+    for layer_index, (layer_stars, layer_options) in enumerate(star_layers):
+        if len(layer_stars) == 0:
+            continue
 
-    band = scatter_options.pop('band', 'R')
-    min_mag = scatter_options.pop('min_mag', 8)
-    max_mag = scatter_options.pop('max_mag', 20)
-    min_size = scatter_options.pop('min_size', 2)
-    max_size = scatter_options.pop('max_size', 50)
+        scatter_options = dict(layer_options)
+        band = scatter_options.pop('band', 'R')
+        min_mag = scatter_options.pop('min_mag', 8)
+        max_mag = scatter_options.pop('max_mag', 20)
+        min_size = scatter_options.pop('min_size', 2)
+        max_size = scatter_options.pop('max_size', 50)
+        size_map = scatter_options.pop('size_map', 'linear')
+        show_legend = scatter_options.pop('show_legend', layer_index == 0)
 
-    if max_size <= min_size:
-        raise HealpixException(f"Marker size must be > {min_size}")
+        if max_size <= min_size:
+            raise HealpixException(f"Marker size must be > {min_size}")
 
-    if 'color' not in scatter_options and 'c' not in scatter_options and 'facecolor' not in scatter_options and 'fc' not in scatter_options and 'edgecolor' not in scatter_options and 'ec' not in scatter_options:
-        scatter_options['color'] = 'black'
-    if 'marker' not in scatter_options:
-        scatter_options['marker'] = 'o'
+        if 'color' not in scatter_options and 'c' not in scatter_options and 'facecolor' not in scatter_options and 'fc' not in scatter_options and 'edgecolor' not in scatter_options and 'ec' not in scatter_options:
+            scatter_options['color'] = 'black'
+        if 'marker' not in scatter_options:
+            scatter_options['marker'] = 'o'
 
-    if zoom:
-        [xlim, ylim] = np.sort(sp.crs.transform_points(ax.get_xlim(), ax.get_ylim(), inverse=True).transpose())
-        xlim = (xlim + 360) % 360
+        if zoom:
+            [xlim, ylim] = np.sort(sp.crs.transform_points(ax.get_xlim(), ax.get_ylim(), inverse=True).transpose())
+            xlim = (xlim + 360) % 360
 
-        star_filter = (stars['ra'] >= xlim[0]) & (stars['ra'] <= xlim[1]) & (stars['dec'] >= ylim[0]) & (stars['dec'] <= ylim[1])
-        star_filter &= ~np.any(np.isnan(stars['ra'])) & ~np.any(np.isnan(stars['dec'])) & ~np.any(np.isnan(stars[band]))
+            star_filter = (layer_stars['ra'] >= xlim[0]) & (layer_stars['ra'] <= xlim[1]) & (layer_stars['dec'] >= ylim[0]) & (layer_stars['dec'] <= ylim[1])
+            star_filter &= ~np.any(np.isnan(layer_stars['ra'])) & ~np.any(np.isnan(layer_stars['dec'])) & ~np.any(np.isnan(layer_stars[band]))
 
-        if not np.any(star_filter):
-            return
+            if not np.any(star_filter):
+                continue
 
-        stars = stars[star_filter]
+            layer_stars = layer_stars[star_filter]
 
-    if min_mag - max_mag > 7:
-        mag_step = 2
-    else:
-        mag_step = 1
-
-    legend_elements = []
-    for mag in range(min_mag, max_mag + 1, mag_step):
-        scatter_options['s'] = min_size + (max_size - min_size) * (max_mag - np.maximum(min_mag, np.minimum(max_mag, mag))) / (max_mag - min_mag) + min_size
-        if mag == min_mag:
-            label = f"<={mag}"
-        elif mag == max_mag:
-            label = f">={mag}"
+        if min_mag - max_mag > 7:
+            mag_step = 2
         else:
-            label = f"{mag}"
-        legend_elements.append(plt.scatter([], [], label=label, **scatter_options))
+            mag_step = 1
 
-    ax.legend(handles=legend_elements, loc='upper right', title="Star Mag", frameon=True, edgecolor='black', fontsize=fontsize['stars_legend'], title_fontsize=fontsize['stars_legend'])
+        if show_legend:
+            legend_elements = []
+            for mag in range(min_mag, max_mag + 1, mag_step):
+                scatter_options['s'] = _get_marker_sizes(
+                    mag,
+                    min_mag=min_mag,
+                    max_mag=max_mag,
+                    min_size=min_size,
+                    max_size=max_size,
+                    size_map=size_map,
+                )
+                if mag == min_mag:
+                    label = f"<={mag}"
+                elif mag == max_mag:
+                    label = f">={mag}"
+                else:
+                    label = f"{mag}"
+                legend_elements.append(plt.scatter([], [], label=label, **scatter_options))
 
-    relative_sizes = (max_mag - np.maximum(min_mag, np.minimum(max_mag, stars[band]))) / (max_mag - min_mag)
-    scatter_options['s'] = min_size + (max_size - min_size) * relative_sizes
+            ax.legend(handles=legend_elements, loc='upper right', title="Star Mag", frameon=True, edgecolor='black', fontsize=fontsize['stars_legend'], title_fontsize=fontsize['stars_legend'])
 
-    if galactic:
-        points_icrs = SkyCoord(ra=stars['ra']*u.degree, dec=stars['dec']*u.degree, frame='icrs')
-        plt.scatter(points_icrs.galactic.l.degree, points_icrs.galactic.b.degree, **scatter_options)
-    else:
-        plt.scatter(stars['ra'], stars['dec'], **scatter_options)
+        scatter_options['s'] = _get_marker_sizes(
+            layer_stars[band],
+            min_mag=min_mag,
+            max_mag=max_mag,
+            min_size=min_size,
+            max_size=max_size,
+            size_map=size_map,
+        )
+
+        if galactic:
+            points_icrs = SkyCoord(ra=layer_stars['ra']*u.degree, dec=layer_stars['dec']*u.degree, frame='icrs')
+            plt.scatter(points_icrs.galactic.l.degree, points_icrs.galactic.b.degree, **scatter_options)
+        else:
+            plt.scatter(layer_stars['ra'], layer_stars['dec'], **scatter_options)
 
 def _draw_asterisms(
         sp=None,
