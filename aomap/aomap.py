@@ -201,6 +201,12 @@ def read_config(config_or_filename):
     if not hasattr(config, 'asterisms_min_galactic_latitude'):
         config.asterisms_min_galactic_latitude = 20.0
 
+    if not hasattr(config, 'asterisms_galactic_latitude_bypass_pixs'):
+        config.asterisms_galactic_latitude_bypass_pixs = []
+    elif not isinstance(config.asterisms_galactic_latitude_bypass_pixs, list):
+        config.asterisms_galactic_latitude_bypass_pixs = [config.asterisms_galactic_latitude_bypass_pixs]
+    config.asterisms_galactic_latitude_bypass_pixs = [int(pix) for pix in config.asterisms_galactic_latitude_bypass_pixs]
+
     if not hasattr(config, 'asterisms_max_star_density'):
         config.asterisms_max_star_density = 2.0
 
@@ -1219,8 +1225,11 @@ def _get_gaia_stars_in_outer_pixel(config, outer_pix, num_retries=1, force_reloa
 
 def _build_asterisms(config, mode, outer_pix, ao_system_name, verbose=False):
     # Exclusions that DO NOT require asterisms go here: excluded = ...
+    bypass_latitude_cut = outer_pix in config.asterisms_galactic_latitude_bypass_pixs
     galactic_coord = healpix.get_pixel_skycoord(config.outer_level, outer_pix).galactic
-    excluded = np.abs(galactic_coord.b.degree) < config.asterisms_min_galactic_latitude
+    excluded = (not bypass_latitude_cut) and (
+        np.abs(galactic_coord.b.degree) < config.asterisms_min_galactic_latitude
+    )
 
     if excluded:
         success = True
@@ -1254,6 +1263,7 @@ def _create_asterisms(config, outer_pix, ao_system_name, verbose=False):
 
 def get_stars_for_asterisms(config, outer_pix, neighbour_level=None, required_band=None, use_cache=False):
     gaia_data = _get_gaia_stars_in_outer_pixel(config, outer_pix, use_cache=use_cache)
+    bypass_latitude_cut = outer_pix in config.asterisms_galactic_latitude_bypass_pixs
 
     if neighbour_level is not None:
         subpixs = healpix.get_subpixels(config.outer_level, outer_pix, neighbour_level)
@@ -1265,7 +1275,7 @@ def get_stars_for_asterisms(config, outer_pix, neighbour_level=None, required_ba
             if pix < 0:
                 continue
             coord = healpix.get_pixel_skycoord(neighbour_level, pix)
-            if np.abs(coord.galactic.b.degree) < config.asterisms_min_galactic_latitude:
+            if (not bypass_latitude_cut) and np.abs(coord.galactic.b.degree) < config.asterisms_min_galactic_latitude:
                 continue
             neighbour_gaia_data = _get_gaia_stars_in_outer_pixel(config, pix, use_cache=use_cache)
             neighbour_gaia_data['pix'] = healpix.get_healpix_from_skycoord(neighbour_level, SkyCoord(ra=neighbour_gaia_data['gaia_ra'], dec=neighbour_gaia_data['gaia_dec'], unit=(u.degree, u.degree)))
@@ -1462,7 +1472,11 @@ def _get_asterisms_EE(config, asterisms, ao_system, batch_size=10000):
                 data = {
                     'wavelength': get_prediction_wavelength(config),
                     'lgs': ao_system['lgs'],
-                    'ngs': asterism.get_ngs_from_asterisms(asterisms[batch_indexes])
+                    'ngs': asterism.get_ngs_from_asterisms(asterisms[batch_indexes]),
+                    'r': np.zeros((len(batch_indexes),), dtype=np.float64),
+                    'theta': np.zeros((len(batch_indexes),), dtype=np.float64),
+                    'x': np.zeros((len(batch_indexes),), dtype=np.float64),
+                    'y': np.zeros((len(batch_indexes),), dtype=np.float64),
                 }
 
                 X = training.get_model_X(data, mean_only=True)
@@ -2185,7 +2199,7 @@ def get_dummy_map_data(config, map_level, dummy_value=1.0, level=None, pixs=None
     map_data.title = None
     return map_data
 
-def get_map_data(config, map_level, key, level=None, pixs=None, coords=(), ra_limit=None, dec_limit=None, survey=None, allow_slow=False, nan_below=None):
+def get_map_data(config, map_level, key, level=None, pixs=None, coords=(), ra_limit=None, dec_limit=None, survey=None, allow_slow=False, nan_below=None, use_cache=False):
     if pixs is not None and level is None:
         raise AOMapException('level required if pixs is provided')
 
@@ -2239,11 +2253,24 @@ def get_map_data(config, map_level, key, level=None, pixs=None, coords=(), ra_li
         if len(outer_pixs) > max_outer_pix and not allow_slow:
             raise AOMapException('map will take a long time to build, set allow_slow=True to continue or use lower map level')
 
-        ([map_pixs, map_values], [_, FITS_format], [_, unit]) = _get_inner_values(config, outer_pixs[0], ['pix', key], ao_system, use_cache=True, return_details=True)
+        ([map_pixs, map_values], [_, FITS_format], [_, unit]) = _get_inner_values(
+            config,
+            outer_pixs[0],
+            ['pix', key],
+            ao_system,
+            use_cache=use_cache,
+            return_details=True,
+        )
 
         if len(pixs) > 1:
             for outer_pix in outer_pixs[1:]:
-                [tmp_map_pixs, tmp_map_values] = _get_inner_values(config, outer_pix, ['pix', key], ao_system)
+                [tmp_map_pixs, tmp_map_values] = _get_inner_values(
+                    config,
+                    outer_pix,
+                    ['pix', key],
+                    ao_system,
+                    use_cache=use_cache,
+                )
                 map_pixs = np.concatenate((map_pixs, tmp_map_pixs))
                 map_values = np.concatenate((map_values, tmp_map_values))
 

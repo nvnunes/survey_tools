@@ -91,6 +91,7 @@ max_dust_extinction: 0.3    # Av
 min_ecliptic_latitude: 15.0 # degree
 
 asterisms_min_galactic_latitude:  20.0  # degree
+asterisms_galactic_latitude_bypass_pixs: [] # outer pixels that bypass the galactic-latitude exclusion
 asterisms_max_star_density:        6.0  # stars/arcmin^2
 asterisms_max_bright_star_mag:     8.0  # Vega
 asterisms_max_overlap:             0.66 # relative to area of smaller intersecting asterism
